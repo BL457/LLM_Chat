@@ -83,11 +83,25 @@ export default function Conversation({ char, userProfile, settings, onSend, onUp
   useEffect(() => {
     const el = messagesRef.current
     if (!el) return
-    el.scrollTop = el.scrollHeight
+    // Re-snap to bottom several times — once immediately, once after the
+    // next layout pass, then a couple of delayed retries to catch images
+    // (particularly large data: URL attachments) whose natural dimensions
+    // only arrive once the browser finishes decoding them.
+    const snap = () => { if (el) el.scrollTop = el.scrollHeight }
+    snap()
+    const raf = requestAnimationFrame(snap)
+    const t1 = setTimeout(snap, 100)
+    const t2 = setTimeout(snap, 350)
+
     wasNearBottomRef.current = true
     setShowScrollDown(false)
-    // Focus the composer so the user can start typing immediately after picking a chat.
     if (textareaRef.current) textareaRef.current.focus()
+
+    return () => {
+      cancelAnimationFrame(raf)
+      clearTimeout(t1)
+      clearTimeout(t2)
+    }
   }, [char?.id])
 
   const onMessagesScroll = () => {
