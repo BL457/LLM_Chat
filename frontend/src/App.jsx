@@ -158,6 +158,23 @@ function viewChar(char, messages, scene) {
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s }
 
+// Approximate "when did this conversation last move" by mining the trailing
+// Date.now() out of the latest visible message's id (we generate ids as
+// 'u'+Date.now(), 'a'+Date.now(), 'legacy-N-'+Date.now() — all end in a
+// numeric timestamp). Returns 0 for empty conversations so they sort to the
+// bottom of the sidebar.
+function lastActivityTs(messages) {
+  if (!Array.isArray(messages)) return 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!m || m.role === 'narrator' || m.hidden) continue
+    const match = String(m.id || '').match(/(\d{10,})/)
+    if (match) return parseInt(match[1], 10)
+    return 0
+  }
+  return 0
+}
+
 function apiPayload(messages) {
   return messages.filter(m => m.role !== 'narrator' && !m.streaming).map(m => {
     const out = {
@@ -291,10 +308,12 @@ export default function App() {
   // Build the view shape per character. A character is shown as "typing" when
   // an assistant message is currently streaming for THAT specific character —
   // regardless of which chat is currently selected in the sidebar.
+  // Sorted by most recent activity first (newest message at the top), with
+  // empty conversations falling to the bottom.
   const views = characters.map(c => ({
     ...viewChar(c, chatHistory[c.id], sceneStates[c.id]),
     typing: streamingCharId === c.id,
-  }))
+  })).sort((a, b) => lastActivityTs(b.messages) - lastActivityTs(a.messages))
   const active = views.find(v => v.id === activeId)
 
   // ─── Send / regenerate / streaming ─────────────────────────────────────
