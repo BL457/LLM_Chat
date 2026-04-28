@@ -137,6 +137,7 @@ export default function Settings({ settings, onUpdate, onClose }) {
 
         <Group title="Behavior">
           <Toggle label="Show thinking" sub="Stream the model's chain-of-thought (if the model supports it)." value={draft.think === 'true' || draft.think === true} onChange={v => set('think', v ? 'true' : 'false')} />
+          <Toggle label="Characters are aware of the actual time of day" sub="Prepends each user message with its timestamp so the character knows roughly when you wrote it. Useful for natural greetings (good morning / late night) and for the model to feel time pass between exchanges." value={draft.awareOfTime === 'true' || draft.awareOfTime === true} onChange={v => set('awareOfTime', v ? 'true' : 'false')} />
         </Group>
 
         <Group title="Notifications">

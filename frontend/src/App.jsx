@@ -54,6 +54,7 @@ const DEFAULT_SETTINGS = {
   numCtx: 16384,
   numPredict: 2048,
   think: 'false',
+  awareOfTime: 'false',
   imgEnabled: 'true',
   density: 'cozy',
   retryPrompt: 'please repeat that response in the correct format',
@@ -68,8 +69,12 @@ const DEFAULT_SETTINGS = {
   rpProtocol: '',
 }
 
-function buildNarrativeSystemPrompt(char, sceneStateStr) {
+function buildNarrativeSystemPrompt(char, sceneStateStr, { timeAware = false } = {}) {
   const name = char?.name || 'the character'
+  const timeBlock = timeAware ? `
+
+=== TIME AWARENESS ===
+Every user message you receive is prefixed with the timestamp it was sent at, in the format [YYYY-MM-DD HH:MM] (24-hour clock, local time). Use this naturally — for time-of-day greetings, awareness of how much time has elapsed between exchanges, and to colour your character's mood and energy where appropriate (sleepy in the small hours, hungry around mealtimes, weary by late evening). Treat the bracketed prefix as out-of-character context: do NOT echo the timestamp in your reply, do NOT repeat the date back, and do NOT include timestamps in your own messages. The user already knows what time it is — you just have access to the same information.` : ''
   return `You are ${name}. Stay in character. No disclaimers. No breaking the fourth wall.
 
 === RESPONSE FORMAT (MANDATORY) ===
@@ -126,7 +131,7 @@ ${sceneStateStr}
 Messages beginning with [NARRATOR COMMAND] are absolute directives. Comply fully.
 
 === OUT-OF-CHARACTER CONTEXT ===
-Messages or sections wrapped in [OOC ... ] ... [/OOC] are out-of-character context, not speech. They establish facts about the user, the world, or the scene — for example, what the user looks like or whether you've met before. Treat the contents as setup information you have already internalised. Do NOT respond to an [OOC] block directly, do NOT acknowledge it as a message, and do NOT quote or repeat it. Just absorb the information and use it to inform your in-character reply to whatever the user says next.
+Messages or sections wrapped in [OOC ... ] ... [/OOC] are out-of-character context, not speech. They establish facts about the user, the world, or the scene — for example, what the user looks like or whether you've met before. Treat the contents as setup information you have already internalised. Do NOT respond to an [OOC] block directly, do NOT acknowledge it as a message, and do NOT quote or repeat it. Just absorb the information and use it to inform your in-character reply to whatever the user says next.${timeBlock}
 
 === CHARACTER ===
 ${char?.systemPrompt || ''}`.trim()
@@ -175,11 +180,33 @@ function lastActivityTs(messages) {
   return 0
 }
 
-function apiPayload(messages) {
+// Pull a JS timestamp out of a message: prefer an explicit `ts` field if we
+// added one, otherwise mine the trailing Date.now() out of the id (we
+// generate ids as 'u'+Date.now() / 'a'+Date.now() / 'legacy-N-'+Date.now()).
+function messageTimestamp(msg) {
+  if (typeof msg?.ts === 'number' && msg.ts > 0) return msg.ts
+  const match = String(msg?.id || '').match(/(\d{10,})/)
+  return match ? parseInt(match[1], 10) : null
+}
+
+function formatLLMTimestamp(ms) {
+  const d = new Date(ms)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function apiPayload(messages, { prefixTimestamps = false } = {}) {
   return messages.filter(m => m.role !== 'narrator' && !m.streaming).map(m => {
     const out = {
       role: m.role === 'assistant' ? 'assistant' : 'user',
       content: m.text || '',
+    }
+    // If "characters are aware of the time of day" is enabled, prepend an
+    // ISO-ish timestamp to each visible user message. The system prompt
+    // explains the format so the model doesn't echo it back.
+    if (prefixTimestamps && m.role === 'user' && !m.hidden) {
+      const ts = messageTimestamp(m)
+      if (ts) out.content = `[${formatLLMTimestamp(ts)}] ${out.content}`
     }
     // Pass user-attached images to Ollama (its format: base64 strings without
     // the "data:image/...;base64," prefix). Only do this for user messages —
@@ -321,7 +348,8 @@ export default function App() {
     const char = characters.find(c => c.id === charId)
     if (!char) return
     const scene = sceneStates[charId] || EMPTY_SCENE
-    const sysPrompt = buildNarrativeSystemPrompt(char, sceneStateToString(scene))
+    const timeAware = settings.awareOfTime === 'true' || settings.awareOfTime === true
+    const sysPrompt = buildNarrativeSystemPrompt(char, sceneStateToString(scene), { timeAware })
 
     const assistantId = 'a' + Date.now()
     setStreamingId(assistantId)
@@ -516,9 +544,9 @@ export default function App() {
       return result
     })
     setTimeout(() => {
-      runAssistantTurn(activeId, apiPayload(updated))
+      runAssistantTurn(activeId, apiPayload(updated, { prefixTimestamps: settings.awareOfTime === 'true' || settings.awareOfTime === true }))
     }, 0)
-  }, [activeId, chatHistory, userProfile, runAssistantTurn])
+  }, [activeId, chatHistory, userProfile, settings.awareOfTime, runAssistantTurn])
 
   const handleCancelStream = useCallback(() => {
     if (abortRef.current) abortRef.current.abort()
@@ -530,8 +558,9 @@ export default function App() {
     const idx = cur.findIndex(m => m.id === msg.id)
     if (idx < 0) return
     const trimmed = cur.slice(0, idx)
-    runAssistantTurn(activeId, apiPayload(trimmed), msg.id)
-  }, [activeId, chatHistory, runAssistantTurn])
+    const ts = settings.awareOfTime === 'true' || settings.awareOfTime === true
+    runAssistantTurn(activeId, apiPayload(trimmed, { prefixTimestamps: ts }), msg.id)
+  }, [activeId, chatHistory, settings.awareOfTime, runAssistantTurn])
 
   // Re-roll the reply to a user message: drop everything after this user
   // message (including the assistant reply that followed) and regenerate.
@@ -546,8 +575,9 @@ export default function App() {
       saveState('chatHistory', next).catch(() => {})
       return next
     })
-    setTimeout(() => runAssistantTurn(activeId, apiPayload(trimmed)), 0)
-  }, [activeId, chatHistory, runAssistantTurn])
+    const ts = settings.awareOfTime === 'true' || settings.awareOfTime === true
+    setTimeout(() => runAssistantTurn(activeId, apiPayload(trimmed, { prefixTimestamps: ts })), 0)
+  }, [activeId, chatHistory, settings.awareOfTime, runAssistantTurn])
 
   const handleContinueFrom = useCallback((msg) => {
     if (!activeId) return
