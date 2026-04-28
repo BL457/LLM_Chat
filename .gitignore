@@ -1,0 +1,39 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Personal RP data — characters, chat history, scene state, settings,
+# user profile, saved profiles. Backed up separately, not in git.
+# Exception: booru_tags.csv is reference data the server needs to start up,
+# so we DO track it.
+data/*
+!data/booru_tags.csv
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment
+.env
+.env.local
