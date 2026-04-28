@@ -37,6 +37,17 @@ export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene,
     setEditing(false)
   }
 
+  // Dirty when in edit mode and the draft (char fields or scene) differs.
+  const isDirty = editing && (
+    JSON.stringify(draft) !== JSON.stringify(char) ||
+    JSON.stringify(draftScene) !== JSON.stringify({ ...EMPTY_SCENE, ...(scene || {}) })
+  )
+  const [confirmExit, setConfirmExit] = useState(false)
+  const attemptClose = () => {
+    if (isDirty) setConfirmExit(true)
+    else onClose()
+  }
+
   const messageCount = (char.messages || []).filter(m => m.role !== 'narrator').length
   const imageCount = (char.messages || []).filter(m => m.image && m.image.status === 'ready').length
 
@@ -49,7 +60,7 @@ export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene,
   }
 
   return (
-    <Overlay onClose={onClose} width={520}>
+    <Overlay onClose={attemptClose} width={520}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px' }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--sl-muted)' }}>Profile</div>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -59,7 +70,7 @@ export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene,
                 <button className="sl-btn-ghost" onClick={cancel}>Cancel</button>
                 <button className="sl-btn" onClick={save}>Save</button>
               </>}
-          <button className="sl-icon-btn" onClick={onClose}>{ICONS.close}</button>
+          <button className="sl-icon-btn" onClick={attemptClose}>{ICONS.close}</button>
         </div>
       </div>
 
@@ -183,6 +194,15 @@ export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene,
             else if (confirm === 'delete') { onDelete && onDelete(); onClose() }
             setConfirm(null)
           }}
+        />
+      )}
+      {confirmExit && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          body="The profile has been edited but not saved. Closing now will lose those changes."
+          confirmLabel="Discard"
+          onCancel={() => setConfirmExit(false)}
+          onConfirm={() => { setConfirmExit(false); onClose() }}
         />
       )}
     </Overlay>

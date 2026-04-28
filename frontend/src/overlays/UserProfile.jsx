@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import Overlay from './Overlay.jsx'
+import Overlay, { ConfirmDialog } from './Overlay.jsx'
 import { Avatar, ICONS } from '../shared.jsx'
 
 const EMPTY_PROFILE = {
@@ -63,6 +63,14 @@ export default function UserProfile({ profile, savedProfiles = [], onClose, onUp
 
   const save = () => { onUpdate(draft); onClose() }
 
+  // Compare against the original profile (filled with defaults) to spot edits.
+  const isDirty = JSON.stringify(draft) !== JSON.stringify({ ...EMPTY_PROFILE, ...(profile || {}) })
+  const [confirmExit, setConfirmExit] = useState(false)
+  const attemptClose = () => {
+    if (isDirty) setConfirmExit(true)
+    else onClose()
+  }
+
   // Build a preview of what will be sent to characters on first message.
   const previewLines = []
   if (draft.name) previewLines.push(`NAME: ${draft.name}`)
@@ -80,12 +88,12 @@ ${previewLines.join('\n')}
     : '(nothing will be injected — fill in at least a name or description)'
 
   return (
-    <Overlay onClose={onClose} width={520}>
+    <Overlay onClose={attemptClose} width={520}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--sl-border)', position: 'relative' }}>
         <div style={{ fontSize: 14, fontWeight: 600 }}>Your profile</div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', position: 'relative' }} ref={menuWrapRef}>
           <button className="sl-icon-btn" aria-label="Saved profiles" title="Saved profiles" onClick={() => setPresetMenuOpen(o => !o)} data-active={presetMenuOpen ? 'true' : 'false'}>{ICONS.more}</button>
-          <button className="sl-btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="sl-btn-ghost" onClick={attemptClose}>Cancel</button>
           <button className="sl-btn" onClick={save}>Save</button>
 
           {presetMenuOpen && (
@@ -219,6 +227,15 @@ ${previewLines.join('\n')}
           </div>
         </Section>
       </div>
+      {confirmExit && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          body="Your profile has been edited but not saved. Closing now will lose those changes."
+          confirmLabel="Discard"
+          onCancel={() => setConfirmExit(false)}
+          onConfirm={() => { setConfirmExit(false); onClose() }}
+        />
+      )}
     </Overlay>
   )
 }

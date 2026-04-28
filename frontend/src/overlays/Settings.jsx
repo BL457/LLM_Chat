@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import Overlay from './Overlay.jsx'
+import Overlay, { ConfirmDialog } from './Overlay.jsx'
 import { ICONS } from '../shared.jsx'
 import { listLLMModels, listSdModels, listSdSamplers, setSdModel, testLLMConnection, testSdConnection } from '../api.js'
 import { notificationPermission, requestNotificationPermission } from '../notifications.js'
@@ -51,6 +51,8 @@ export default function Settings({ settings, onUpdate, onClose }) {
   // a settings overlay; nothing here is huge.
   const isDirty = JSON.stringify(draft) !== JSON.stringify(settings)
 
+  const [confirmExit, setConfirmExit] = useState(false)
+
   const handleSave = () => {
     onUpdate(draft)
     // If the SD checkpoint was changed, tell Forge to switch.
@@ -59,19 +61,22 @@ export default function Settings({ settings, onUpdate, onClose }) {
     }
     onClose()
   }
-  const handleCancel = () => {
-    onClose()
+  // Any close-attempt — Cancel button or backdrop click — runs through this.
+  // If there are unsaved edits we ask for confirmation before discarding.
+  const attemptClose = () => {
+    if (isDirty) setConfirmExit(true)
+    else onClose()
   }
 
   return (
-    <Overlay onClose={onClose} width={620}>
+    <Overlay onClose={attemptClose} width={620}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--sl-border)' }}>
         <div style={{ fontSize: 16, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
           Settings
           {isDirty && <span style={{ fontSize: 11, color: 'var(--sl-accent)', fontWeight: 500 }}>· unsaved</span>}
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          <button className="sl-btn-ghost" onClick={handleCancel}>Cancel</button>
+          <button className="sl-btn-ghost" onClick={attemptClose}>Cancel</button>
           <button className="sl-btn" onClick={handleSave} disabled={!isDirty}>Save</button>
         </div>
       </div>
@@ -92,6 +97,7 @@ export default function Settings({ settings, onUpdate, onClose }) {
           )}
           <TestButton run={() => testLLMConnection({ provider, endpoint: llmEndpoint, apiKey: llmApiKey })}
                       label="Test LLM connection"
+                      resetKey={`${provider}|${llmEndpoint}|${llmApiKey}`}
                       okText={(n) => `Connected — ${n} model${n === 1 ? '' : 's'} available`} />
 
           <div style={{ height: 1, background: 'var(--sl-border)', margin: '4px 0' }} />
@@ -101,6 +107,7 @@ export default function Settings({ settings, onUpdate, onClose }) {
           </Row>
           <TestButton run={() => testSdConnection({ endpoint: sdEndpoint })}
                       label="Test image generation connection"
+                      resetKey={sdEndpoint}
                       okText={(n) => `Connected — ${n} checkpoint${n === 1 ? '' : 's'} loaded`} />
         </Group>
 
@@ -215,15 +222,27 @@ export default function Settings({ settings, onUpdate, onClose }) {
           </>
         )}
       </div>
+      {confirmExit && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          body="Settings have been edited but not saved. Closing now will lose those changes."
+          confirmLabel="Discard"
+          onCancel={() => setConfirmExit(false)}
+          onConfirm={() => { setConfirmExit(false); onClose() }}
+        />
+      )}
     </Overlay>
   )
 }
 
 // Connection-test button. Clicking runs the supplied async `run` function;
-// shows ✓ green / ✗ red inline once it completes. Doesn't auto-dismiss —
-// the result stays visible until the next click.
-function TestButton({ run, label, okText }) {
+// shows ✓ green / ✗ red inline once it completes. The `resetKey` prop wipes
+// any stale result when the inputs being tested have changed — so a green
+// "Connected" doesn't linger after you've edited the endpoint.
+function TestButton({ run, label, okText, resetKey }) {
   const [state, setState] = useState({ status: 'idle' })
+
+  useEffect(() => { setState({ status: 'idle' }) }, [resetKey])
 
   const click = async () => {
     setState({ status: 'testing' })
