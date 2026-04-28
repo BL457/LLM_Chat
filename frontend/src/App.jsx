@@ -44,7 +44,7 @@ const DEFAULT_SETTINGS = {
   llmApiKey: '',
   sdEndpoint: 'http://localhost:7860',
 
-  ollamaModel: 'gemma3:27b',
+  ollamaModel: 'gemma4:26b',
   temperature: 1.0,
   topK: 64,
   topP: 0.95,

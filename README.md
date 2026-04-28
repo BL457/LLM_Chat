@@ -76,7 +76,7 @@ The endpoint is editable per-provider, so you can point at LAN addresses, Tailsc
 ### Setting up Ollama
 
 ```bash
-ollama pull gemma3:27b
+ollama pull gemma4:26b
 ```
 
 Confirm it's reachable: visit `http://localhost:11434` in a browser, you should see `Ollama is running`.
@@ -99,14 +99,14 @@ Sign up at [openrouter.ai](https://openrouter.ai/), generate an API key (`sk-or-
 
 | Model | Run via | Notes |
 |---|---|---|
-| `gemma3:27b` | Ollama | **Default recommendation.** Strong roleplay, supports vision (image attachments), fits on a 24 GB GPU at Q4_K_M. |
-| `gemma3:12b` / `gemma3:4b` | Ollama | Lighter alternatives — same shape, also vision-capable. |
-| `gemma4:26b` | Ollama | Mixture-of-experts, fast (~4B active params), but no native vision. |
+| `gemma4:26b` | Ollama | **Default recommendation.** Mixture-of-experts (~4B active params per token), so it runs noticeably faster than the dense Gemma 3 27B on the same GPU while producing roleplay output that's comparable or better. Fits on a 24 GB GPU at Q4_K_M with the recommended 16k context. No native vision. |
+| `gemma3:27b` | Ollama | Slower than gemma4 but vision-capable — pick this when you actually want to send the model pictures via the paperclip. |
+| `gemma3:12b` / `gemma3:4b` | Ollama | Lighter vision-capable Gemmas for weaker GPUs. |
 | `llama3.3:70b` | Ollama / OpenRouter | Strong general chat. Needs a serious local box, or use OpenRouter. |
 | `meta-llama/llama-3.3-70b-instruct` | OpenRouter | Same model, cloud-hosted, no GPU needed. |
-| `mistralai/mistral-large` | OpenRouter | Solid roleplay output. |
+| `mistralai/mistral-large` | OpenRouter | Solid roleplay output via OpenRouter. |
 
-**Vision support matters** for the paperclip image-attach feature. Gemma 3 family is vision-capable; Gemma 4, Llama 3.3, and most local non-vision GGUFs are not. Sending a picture to a non-vision model just gets ignored. Switch models in **Settings → Model** when needed.
+**Vision support matters** for the paperclip image-attach feature. Gemma 3 family is vision-capable; Gemma 4, Llama 3.3, and most non-vision GGUFs are not. Sending a picture to a non-vision model just gets ignored — swap to a vision-capable model in **Settings → Model** when you want pictures understood.
 
 ---
 
@@ -157,7 +157,7 @@ These are the values the app starts with, tuned for Gemma + Illustrious-XL. Over
 
 | Field | Value | Why |
 |---|---|---|
-| Model | `gemma3:27b` | See above |
+| Model | `gemma4:26b` | See above |
 | Context size | `16384` | Large enough for long roleplays + scene block + system prompt |
 | Temperature | `1.0` | Gemma official guidance |
 | top_k | `64` | Gemma official guidance |
@@ -269,7 +269,7 @@ gemma4-rp/
 
 - LLM and image-gen endpoints are runtime settings, not constants. The `DEFAULT_OLLAMA_URL` / `DEFAULT_FORGE_URL` in `server.py` are only used as fallbacks when the request body or query string doesn't supply an explicit URL.
 - Default LLM provider is `ollama` at `http://localhost:11434`. Default SD endpoint is `http://localhost:7860`. Change either in **Settings → Connection**.
-- Default model name in code (`frontend/src/App.jsx:DEFAULT_SETTINGS.ollamaModel`) is `gemma3:27b`. Override in **Settings → Model**.
+- Default model name in code (`frontend/src/App.jsx:DEFAULT_SETTINGS.ollamaModel`) is `gemma4:26b`. Override in **Settings → Model**.
 - The app calls Forge's options endpoint when you change SD model in settings, so you don't have to switch checkpoints in the Forge UI manually.
 - The frontend talks to the backend via `/api/*`. In dev (`npm run dev` on `:5173`), Vite's proxy routes those to `:8000`. In production (the built `dist/`) the FastAPI server hosts both.
 - Mobile viewport (≤ 720 px wide): sidebar and conversation are mutually exclusive screens with a back button, Telegram-style. Long-press a message bubble for the context menu (desktop: right-click).
