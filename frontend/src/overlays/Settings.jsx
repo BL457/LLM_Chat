@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import Overlay from './Overlay.jsx'
 import { ICONS } from '../shared.jsx'
 import { listLLMModels, listSdModels, listSdSamplers, setSdModel } from '../api.js'
@@ -73,10 +73,12 @@ export default function Settings({ settings, onUpdate, onClose }) {
 
         <Group title="Model">
           <Row label="Language model">
-            <select className="sl-input" value={settings.ollamaModel || ''} onChange={e => set('ollamaModel', e.target.value)}>
-              {llmModels.length === 0 && <option value={settings.ollamaModel || ''}>{settings.ollamaModel || '(none)'}</option>}
-              {llmModels.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+            <ModelComboBox
+              value={settings.ollamaModel || ''}
+              options={llmModels}
+              onChange={(v) => set('ollamaModel', v)}
+              placeholder="Search or type a model name…"
+            />
           </Row>
           <Row label="Context size">
             <select className="sl-input" value={settings.numCtx ?? 16384} onChange={e => set('numCtx', parseInt(e.target.value))}>
@@ -181,6 +183,149 @@ export default function Settings({ settings, onUpdate, onClose }) {
         )}
       </div>
     </Overlay>
+  )
+}
+
+// Filterable combobox for picking a model from a (potentially huge) list.
+// Falls back to free-text entry if Enter is pressed with no list match —
+// useful for OpenRouter where the catalogue may not include a brand-new model
+// you want to try.
+function ModelComboBox({ value, options, onChange, placeholder }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [highlight, setHighlight] = useState(0)
+  const wrapRef = useRef(null)
+  const inputRef = useRef(null)
+  const listRef = useRef(null)
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false)
+        setQuery('')
+      }
+    }
+    window.addEventListener('mousedown', onDoc)
+    return () => window.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  // Keep the highlighted item in view.
+  useEffect(() => {
+    if (!open || !listRef.current) return
+    const el = listRef.current.querySelector(`[data-idx="${highlight}"]`)
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' })
+  }, [highlight, open])
+
+  const filtered = query.trim()
+    ? options.filter(o => o.toLowerCase().includes(query.toLowerCase()))
+    : options
+  const VISIBLE_LIMIT = 100
+  const shown = filtered.slice(0, VISIBLE_LIMIT)
+
+  const select = (v) => {
+    onChange(v)
+    setOpen(false)
+    setQuery('')
+    if (inputRef.current) inputRef.current.blur()
+  }
+
+  const onKeyDown = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (!open) setOpen(true)
+      setHighlight(h => Math.min(h + 1, shown.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setHighlight(h => Math.max(h - 1, 0))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (open && shown[highlight]) {
+        select(shown[highlight])
+      } else if (query.trim()) {
+        // Free-text entry — commit whatever was typed
+        select(query.trim())
+      } else {
+        setOpen(false)
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      setOpen(false)
+      setQuery('')
+      if (inputRef.current) inputRef.current.blur()
+    }
+  }
+
+  const displayedInputValue = open ? query : (value || '')
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <input
+        ref={inputRef}
+        className="sl-input"
+        value={displayedInputValue}
+        placeholder={placeholder || 'Type to search…'}
+        onFocus={() => { setOpen(true); setHighlight(0) }}
+        onChange={e => { setQuery(e.target.value); setOpen(true); setHighlight(0) }}
+        onKeyDown={onKeyDown}
+        autoComplete="off"
+      />
+      {value && !open && (
+        <button
+          aria-label="Clear model"
+          title="Clear"
+          onClick={() => onChange('')}
+          style={{
+            position: 'absolute', right: 6, top: 6,
+            background: 'transparent', border: 'none', color: 'var(--sl-muted)',
+            width: 26, height: 26, borderRadius: 6, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = 'var(--sl-surface-2)'}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+        >×</button>
+      )}
+      {open && (
+        <div ref={listRef} style={{
+          position: 'absolute', top: '100%', left: 0, right: 0,
+          marginTop: 4, maxHeight: 280, overflowY: 'auto',
+          background: '#1a1f30', border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 10, padding: 4, zIndex: 60,
+          boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
+        }}>
+          {shown.length === 0 && (
+            <div style={{ padding: '10px 12px', fontSize: 12.5, color: 'var(--sl-muted)' }}>
+              No models match. Press Enter to use “{query}” as a custom model name.
+            </div>
+          )}
+          {shown.map((opt, i) => (
+            <button
+              key={opt}
+              data-idx={i}
+              onClick={() => select(opt)}
+              onMouseEnter={() => setHighlight(i)}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left',
+                padding: '7px 10px', borderRadius: 6,
+                background: i === highlight
+                  ? 'rgba(255,255,255,0.07)'
+                  : (opt === value ? 'var(--sl-accent-soft)' : 'transparent'),
+                color: opt === value ? 'var(--sl-accent)' : '#e8ecf5',
+                border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13,
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+              {opt}
+            </button>
+          ))}
+          {filtered.length > VISIBLE_LIMIT && (
+            <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--sl-muted)' }}>
+              +{filtered.length - VISIBLE_LIMIT} more — keep typing to narrow.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
