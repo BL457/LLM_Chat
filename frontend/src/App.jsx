@@ -625,6 +625,49 @@ export default function App() {
     setOverlay(null)
   }, [characters, persistCharacters])
 
+  // Serialise a character to a .llmchar file (JSON) and trigger a download.
+  const handleExportChar = useCallback((char) => {
+    if (!char) return
+    const payload = {
+      format: 'llmchar/v1',
+      name: char.name || '',
+      blurb: char.blurb || '',
+      accent: char.accent || '',
+      systemPrompt: char.systemPrompt || '',
+      imageTags: char.imageTags || '',
+      avatarUrl: char.avatarUrl || null,
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(char.name || 'character').replace(/[^a-z0-9_-]+/gi, '_').toLowerCase() || 'character'}.llmchar`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }, [])
+
+  // Read a .llmchar file and create a new character from it.
+  const handleImportChar = useCallback(async (file) => {
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text)
+      if (!data || typeof data !== 'object') throw new Error('File is not a valid JSON object.')
+      if (!data.name || typeof data.name !== 'string') throw new Error('Missing required field: name.')
+      // Always assign a fresh id — never reuse the source's, even if present,
+      // to avoid collisions with existing characters.
+      handleCreateChar({
+        name: data.name,
+        systemPrompt: typeof data.systemPrompt === 'string' ? data.systemPrompt : '',
+        imageTags: typeof data.imageTags === 'string' ? data.imageTags : '',
+        blurb: typeof data.blurb === 'string' ? data.blurb : '',
+        accent: typeof data.accent === 'string' && data.accent ? data.accent : autoAccent('imp' + Date.now()),
+        avatarUrl: typeof data.avatarUrl === 'string' && data.avatarUrl.startsWith('data:') ? data.avatarUrl : null,
+      })
+    } catch (e) {
+      alert(`Couldn't import character — ${e.message || e}`)
+    }
+  }, [handleCreateChar])
+
   const handleDeleteChar = useCallback((id) => {
     const remaining = characters.filter(c => c.id !== id)
     persistCharacters(remaining)
@@ -659,6 +702,7 @@ export default function App() {
             activeId={activeId}
             onSelect={(id) => { setActiveId(id); setMobileScreen('conv') }}
             onNewChar={() => setOverlay('newchar')}
+            onImportChar={handleImportChar}
             onOpenSettings={() => setOverlay('settings')}
             onOpenUserProfile={() => setOverlay('userprofile')}
             userProfile={userProfile}
@@ -696,6 +740,7 @@ export default function App() {
             onClearHistory={() => handleClearHistory(active.id)}
             onDelete={() => handleDeleteChar(active.id)}
             onOpenGallery={() => setOverlay('gallery')}
+            onExport={() => handleExportChar(active)}
           />
         )}
         {overlay === 'gallery' && active && (

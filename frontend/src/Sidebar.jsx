@@ -1,9 +1,17 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { Avatar, ICONS } from './shared.jsx'
 
-export default function Sidebar({ characters, activeId, onSelect, onNewChar, onOpenSettings, onOpenUserProfile, userProfile, isMobile }) {
+export default function Sidebar({ characters, activeId, onSelect, onNewChar, onImportChar, onOpenSettings, onOpenUserProfile, userProfile, isMobile }) {
   const [search, setSearch] = useState('')
+  const importRef = useRef(null)
   const filtered = characters.filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
+
+  const onPickImport = (e) => {
+    const f = e.target.files?.[0]
+    if (!f) return
+    onImportChar && onImportChar(f)
+    e.target.value = ''  // reset so the same file can be re-imported later
+  }
 
   // Render the user's avatar — uses their picture, the first letter of their
   // name, or "?" if neither is set.
@@ -52,14 +60,23 @@ export default function Sidebar({ characters, activeId, onSelect, onNewChar, onO
           </div>
         )}
       </div>
-      <div style={{ padding: 12, borderTop: '1px solid var(--sl-border)' }}>
+      <div style={{ padding: 12, borderTop: '1px solid var(--sl-border)', display: 'flex', gap: 6 }}>
+        <input ref={importRef} type="file" accept=".llmchar,.json,application/json" onChange={onPickImport} style={{ display: 'none' }} />
         <button onClick={onNewChar} style={{
-          width: '100%', background: 'var(--sl-surface)', color: 'var(--sl-text)',
+          flex: 1, background: 'var(--sl-surface)', color: 'var(--sl-text)',
           border: '1px dashed var(--sl-border-strong)', padding: '11px', borderRadius: 10,
           fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         }}>
-          {ICONS.plus} Add new character
+          {ICONS.plus} New
+        </button>
+        <button onClick={() => importRef.current?.click()} title="Import a .llmchar file" style={{
+          flex: 1, background: 'var(--sl-surface)', color: 'var(--sl-text)',
+          border: '1px dashed var(--sl-border-strong)', padding: '11px', borderRadius: 10,
+          fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        }}>
+          {ICONS.download} Import
         </button>
       </div>
     </aside>

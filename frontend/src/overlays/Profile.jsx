@@ -4,7 +4,7 @@ import { Avatar, ICONS } from '../shared.jsx'
 
 const EMPTY_SCENE = { location: '', clothing: '', appearance: '', objects: '', mood: '' }
 
-export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene, onClearHistory, onDelete, onOpenGallery }) {
+export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene, onClearHistory, onDelete, onOpenGallery, onExport }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(char)
   const [draftScene, setDraftScene] = useState({ ...EMPTY_SCENE, ...(scene || {}) })
@@ -176,6 +176,7 @@ export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene,
 
         <Section>
           <DestructiveRow icon={ICONS.edit} label="Edit contact" onClick={() => setEditing(true)} />
+          <DestructiveRow icon={ICONS.download} label="Export character (.llmchar)" onClick={onExport} />
           <DestructiveRow icon={ICONS.trash} label="Clear chat history" tone="warn" onClick={() => setConfirm('clear')} />
           <DestructiveRow icon={ICONS.trash} label="Delete contact" tone="danger" onClick={() => setConfirm('delete')} />
         </Section>
