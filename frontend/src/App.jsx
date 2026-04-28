@@ -38,6 +38,12 @@ ${lines.join('\n')}
 }
 
 const DEFAULT_SETTINGS = {
+  // Connection — where to talk to the LLM and the image generator.
+  llmProvider: 'ollama',                       // 'ollama' | 'llama.cpp' | 'openrouter' | 'custom'
+  llmEndpoint: 'http://localhost:11434',
+  llmApiKey: '',
+  sdEndpoint: 'http://localhost:7860',
+
   ollamaModel: 'gemma3:27b',
   temperature: 1.0,
   topK: 64,
@@ -182,6 +188,11 @@ function settingsToApi(s, systemPrompt) {
     num_ctx: s.numCtx,
     num_predict: s.numPredict,
     think: s.think === 'true' || s.think === true,
+    // Provider routing — server uses these to pick Ollama vs OpenAI-compat
+    // and which URL to call.
+    llm_provider: s.llmProvider || 'ollama',
+    llm_endpoint: s.llmEndpoint || 'http://localhost:11434',
+    llm_api_key: s.llmApiKey || '',
   }
 }
 
@@ -395,6 +406,11 @@ export default function App() {
         characterName: char.name,
         sceneState: scene,
         model: settings.ollamaModel,
+        llm: {
+          provider: settings.llmProvider,
+          endpoint: settings.llmEndpoint,
+          apiKey: settings.llmApiKey,
+        },
       })
       const llmTags = (tagsResult?.tags) || ''
 
@@ -406,6 +422,7 @@ export default function App() {
         sceneTags,
         generalTags: settings.generalTags || '',
         characterTags: char.imageTags || '',
+        sdEndpoint: settings.sdEndpoint,
         sd: {
           width: settings.width,
           height: settings.height,

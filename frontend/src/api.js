@@ -69,11 +69,18 @@ export async function streamNarrative({ messages, settings, signal, onText, onSc
 
 // Ask the model to extract booru-style image tags for the latest narrative.
 // Returns { tags: "comma, separated, string" }
-export async function extractImageTags({ narrative, characterName, sceneState, model }) {
+export async function extractImageTags({ narrative, characterName, sceneState, model, llm }) {
   const r = await fetch('/api/extract-image-tags', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ narrative, characterName, sceneState, model }),
+    body: JSON.stringify({
+      narrative, characterName, sceneState, model,
+      settings: {
+        llm_provider: llm?.provider || 'ollama',
+        llm_endpoint: llm?.endpoint || 'http://localhost:11434',
+        llm_api_key: llm?.apiKey || '',
+      },
+    }),
   })
   if (!r.ok) throw new Error('extract-image-tags failed')
   return r.json()
@@ -81,7 +88,7 @@ export async function extractImageTags({ narrative, characterName, sceneState, m
 
 // Send a built prompt to the SD backend.
 // Returns { image: <base64-png>, final_prompt: <string> } or { error }
-export async function generateImage({ llmTags, sceneTags, generalTags, characterTags, sd }) {
+export async function generateImage({ llmTags, sceneTags, generalTags, characterTags, sdEndpoint, sd }) {
   const r = await fetch('/api/generate-image', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -90,6 +97,7 @@ export async function generateImage({ llmTags, sceneTags, generalTags, character
       scene_tags: sceneTags || '',
       general_tags: generalTags || '',
       character_tags: characterTags || '',
+      sd_endpoint: sdEndpoint || 'http://localhost:7860',
       negative_prompt: sd?.negativePrompt || '',
       steps: sd?.steps,
       cfg_scale: sd?.cfgScale,
@@ -102,34 +110,37 @@ export async function generateImage({ llmTags, sceneTags, generalTags, character
   return r.json()
 }
 
-export async function listOllamaModels() {
+// List models from the configured LLM provider. Server dispatches between
+// Ollama's /api/tags and OpenAI-compatible /v1/models.
+export async function listLLMModels({ provider = 'ollama', endpoint = 'http://localhost:11434', apiKey = '' } = {}) {
   try {
-    const r = await fetch('/api/ollama-models')
+    const params = new URLSearchParams({ provider, endpoint, api_key: apiKey })
+    const r = await fetch(`/api/llm-models?${params}`)
     if (!r.ok) return []
     return r.json()
   } catch { return [] }
 }
 
-export async function listSdModels() {
+export async function listSdModels(endpoint = 'http://localhost:7860') {
   try {
-    const r = await fetch('/api/sd-models')
+    const r = await fetch(`/api/sd-models?endpoint=${encodeURIComponent(endpoint)}`)
     if (!r.ok) return []
     return r.json()
   } catch { return [] }
 }
 
-export async function listSdSamplers() {
+export async function listSdSamplers(endpoint = 'http://localhost:7860') {
   try {
-    const r = await fetch('/api/sd-samplers')
+    const r = await fetch(`/api/sd-samplers?endpoint=${encodeURIComponent(endpoint)}`)
     if (!r.ok) return []
     return r.json()
   } catch { return [] }
 }
 
-export async function setSdModel(name) {
+export async function setSdModel(name, endpoint = 'http://localhost:7860') {
   await fetch('/api/sd-model', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: name }),
+    body: JSON.stringify({ model: name, sd_endpoint: endpoint }),
   })
 }

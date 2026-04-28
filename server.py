@@ -211,12 +211,162 @@ def log_res(url: str, status: int, detail: str = "", elapsed_ms: float = 0):
     print(f"{DIM}{ts}{RESET} {color}<- {status} {url}{RESET}{elapsed}{' ' + DIM + detail + RESET if detail else ''}")
 
 
-OLLAMA_URL = "http://localhost:11434"
-FORGE_URL = "http://localhost:7860"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_FORGE_URL = "http://localhost:7860"
 
-# Shared HTTP clients for connection reuse
-ollama_client = httpx.AsyncClient(base_url=OLLAMA_URL, timeout=300)
-forge_client = httpx.AsyncClient(base_url=FORGE_URL, timeout=120)
+# Single shared HTTP client — endpoints are passed in per-request now so the
+# user can point the app at any Ollama / llama.cpp / OpenRouter / Forge URL.
+http_long = httpx.AsyncClient(timeout=300)   # for chat streams
+http_short = httpx.AsyncClient(timeout=120)  # for image gen + utility calls
+
+
+def _llm_config(settings: dict) -> dict:
+    """Pull provider config out of the request settings, with sane defaults."""
+    return {
+        "provider": (settings.get("llm_provider") or "ollama").lower(),
+        "endpoint": (settings.get("llm_endpoint") or DEFAULT_OLLAMA_URL).rstrip("/"),
+        "api_key": settings.get("llm_api_key") or "",
+    }
+
+
+def _sd_endpoint(body: dict) -> str:
+    return (body.get("sd_endpoint") or DEFAULT_FORGE_URL).rstrip("/")
+
+
+# ── LLM provider helpers ─────────────────────────────────────────────────
+# Two backends supported:
+#   - 'ollama'           → POST {endpoint}/api/chat with native Ollama body
+#   - 'openai-compatible' → POST {endpoint}/v1/chat/completions (covers
+#                            llama.cpp, OpenRouter, vLLM, LM Studio, etc.)
+
+def _openai_options(options: dict) -> dict:
+    """Translate Ollama-style options into OpenAI-compatible parameters."""
+    out = {}
+    if options.get("temperature") is not None:
+        out["temperature"] = options["temperature"]
+    if options.get("top_p") is not None:
+        out["top_p"] = options["top_p"]
+    # The following are non-standard OpenAI but accepted by llama.cpp /
+    # vLLM / OpenRouter — they get silently ignored by strict OpenAI hosts.
+    if options.get("top_k") is not None:
+        out["top_k"] = options["top_k"]
+    if options.get("min_p") is not None:
+        out["min_p"] = options["min_p"]
+    if options.get("repeat_penalty") is not None:
+        out["repetition_penalty"] = options["repeat_penalty"]
+    if options.get("num_predict") is not None:
+        out["max_tokens"] = options["num_predict"]
+    return out
+
+
+async def _stream_chat_tokens(messages, options, model, llm, think=None):
+    """Async generator yielding plain text content tokens from the LLM.
+
+    Hides the provider-specific streaming format from callers. Raises
+    httpx.ConnectError or Exception on failure — caller is responsible for
+    surfacing those as `event: error` to the client.
+    """
+    provider = llm["provider"]
+    endpoint = llm["endpoint"]
+
+    if provider == "ollama":
+        url = f"{endpoint}/api/chat"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "options": options,
+        }
+        if think is not None:
+            payload["think"] = think
+        log_req("POST", url, f"[ollama] model={model} msgs={len(messages)}")
+        async with http_long.stream("POST", url, json=payload) as resp:
+            raw_buf = b""
+            async for raw in resp.aiter_bytes():
+                raw_buf += raw
+                while b"\n" in raw_buf:
+                    line_bytes, raw_buf = raw_buf.split(b"\n", 1)
+                    if not line_bytes.strip():
+                        continue
+                    try:
+                        chunk = json.loads(line_bytes)
+                    except json.JSONDecodeError:
+                        continue
+                    content = chunk.get("message", {}).get("content", "")
+                    if content:
+                        yield content
+                    if chunk.get("done", False):
+                        return
+        return
+
+    # OpenAI-compatible streaming SSE: "data: {...}\n\n", terminator "data: [DONE]"
+    url = f"{endpoint}/v1/chat/completions"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        **_openai_options(options),
+    }
+    headers = {"Content-Type": "application/json"}
+    if llm.get("api_key"):
+        headers["Authorization"] = f"Bearer {llm['api_key']}"
+    log_req("POST", url, f"[openai-compatible] model={model} msgs={len(messages)}")
+    async with http_long.stream("POST", url, json=payload, headers=headers) as resp:
+        text_buf = ""
+        async for chunk in resp.aiter_text():
+            text_buf += chunk
+            while "\n\n" in text_buf:
+                event, text_buf = text_buf.split("\n\n", 1)
+                for line in event.split("\n"):
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+                    content = delta.get("content") or ""
+                    if content:
+                        yield content
+
+
+async def _complete_chat(messages, options, model, llm) -> str:
+    """Non-streaming chat completion — returns the assistant's full content string."""
+    provider = llm["provider"]
+    endpoint = llm["endpoint"]
+
+    if provider == "ollama":
+        url = f"{endpoint}/api/chat"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "options": options,
+        }
+        log_req("POST", url, f"[ollama:complete] model={model}")
+        resp = await http_long.post(url, json=payload)
+        data = resp.json()
+        return data.get("message", {}).get("content", "")
+
+    url = f"{endpoint}/v1/chat/completions"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        **_openai_options(options),
+    }
+    headers = {"Content-Type": "application/json"}
+    if llm.get("api_key"):
+        headers["Authorization"] = f"Bearer {llm['api_key']}"
+    log_req("POST", url, f"[openai-compatible:complete] model={model}")
+    resp = await http_long.post(url, json=payload, headers=headers)
+    data = resp.json()
+    return ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
 
 
 @asynccontextmanager
@@ -227,11 +377,11 @@ async def lifespan(app):
     # on in-flight streaming requests
     import asyncio
     try:
-        await asyncio.wait_for(ollama_client.aclose(), timeout=2.0)
+        await asyncio.wait_for(http_long.aclose(), timeout=2.0)
     except (asyncio.TimeoutError, Exception):
         pass
     try:
-        await asyncio.wait_for(forge_client.aclose(), timeout=2.0)
+        await asyncio.wait_for(http_short.aclose(), timeout=2.0)
     except (asyncio.TimeoutError, Exception):
         pass
 
@@ -293,10 +443,10 @@ def parse_scene_block(text: str) -> dict:
     return out
 
 
-async def stream_narrative_only(messages: list, options: dict, model: str, think=None):
-    """Stream from Ollama, parsing the leading scene block out of the response.
+async def stream_narrative_only(messages: list, options: dict, model: str, llm: dict, think=None):
+    """Stream from the configured LLM, parsing the leading scene block out.
 
-    Expected format from the LLM:
+    Expected response shape from the LLM:
         LOCATION: ...
         CLOTHING: ...
         APPEARANCE: ...
@@ -305,89 +455,54 @@ async def stream_narrative_only(messages: list, options: dict, model: str, think
         [/SCENE]
         <narrative text starts here>
 
-    The server buffers content until it sees the [/SCENE] marker, parses the
-    scene block, emits a `scene` SSE event, then streams everything after the
-    marker as `text` events. The client never sees the scene block.
+    Buffer content until the [/SCENE] marker, emit a `scene` SSE event with
+    the parsed dict, then stream everything after as `text` events.
     """
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": True,
-        "options": options,
-    }
-    if think is not None:
-        payload["think"] = think
-
-    token_count = 0
     accum = ""
     scene_emitted = False
-    after_marker_len = 0  # how much narrative has been streamed past [/SCENE]
+    token_count = 0
     t0 = time.time()
 
-    log_req("POST", f"{OLLAMA_URL}/api/chat", f"[narrative] model={model} msgs={len(messages)}")
-
     try:
-        async with ollama_client.stream("POST", "/api/chat", json=payload) as resp:
-            raw_buf = b""
-            async for raw in resp.aiter_bytes():
-                raw_buf += raw
-                while b"\n" in raw_buf:
-                    line_bytes, raw_buf = raw_buf.split(b"\n", 1)
-                    if not line_bytes.strip():
-                        continue
-                    try:
-                        chunk = json.loads(line_bytes)
-                    except json.JSONDecodeError:
-                        continue
+        async for content in _stream_chat_tokens(messages, options, model, llm, think=think):
+            token_count += 1
+            accum += content
 
-                    content = chunk.get("message", {}).get("content", "")
-                    done = chunk.get("done", False)
+            if not scene_emitted:
+                marker_idx = accum.find(SCENE_END_MARKER)
+                if marker_idx >= 0:
+                    scene_block = accum[:marker_idx]
+                    scene_dict = parse_scene_block(scene_block)
+                    if scene_dict:
+                        print(f"  {GREEN}* Scene parsed:{RESET} {list(scene_dict.keys())}")
+                    else:
+                        print(f"  {YELLOW}! Scene marker found but no fields parsed{RESET}")
+                    yield f"event: scene\ndata: {json.dumps(json.dumps(scene_dict))}\n\n"
+                    scene_emitted = True
 
-                    if content:
-                        token_count += 1
-                        accum += content
+                    narrative_start = marker_idx + len(SCENE_END_MARKER)
+                    tail = accum[narrative_start:].lstrip("\r\n")
+                    if tail:
+                        yield f"event: text\ndata: {json.dumps(tail)}\n\n"
+                # else: keep buffering — no emit until marker arrives
+            else:
+                yield f"event: text\ndata: {json.dumps(content)}\n\n"
 
-                        if not scene_emitted:
-                            # Look for the [/SCENE] marker
-                            marker_idx = accum.find(SCENE_END_MARKER)
-                            if marker_idx >= 0:
-                                # Parse everything before the marker as the scene block
-                                scene_block = accum[:marker_idx]
-                                scene_dict = parse_scene_block(scene_block)
-                                if scene_dict:
-                                    print(f"  {GREEN}* Scene parsed:{RESET} {list(scene_dict.keys())}")
-                                else:
-                                    print(f"  {YELLOW}! Scene marker found but no fields parsed{RESET}")
-                                yield f"event: scene\ndata: {json.dumps(json.dumps(scene_dict))}\n\n"
-                                scene_emitted = True
-
-                                # Anything AFTER [/SCENE] is narrative — stream it
-                                narrative_start = marker_idx + len(SCENE_END_MARKER)
-                                tail = accum[narrative_start:].lstrip("\r\n")
-                                if tail:
-                                    yield f"event: text\ndata: {json.dumps(tail)}\n\n"
-                                    after_marker_len = len(accum) - narrative_start
-                            # else: keep buffering, don't emit yet
-                        else:
-                            # Past the marker — stream everything new as narrative
-                            yield f"event: text\ndata: {json.dumps(content)}\n\n"
-                            after_marker_len += len(content)
-
-                    if done:
-                        # If [/SCENE] never appeared, emit the entire accumulated content as text
-                        if not scene_emitted:
-                            print(f"  {YELLOW}! No [/SCENE] marker found, emitting raw text{RESET}")
-                            yield f"event: scene\ndata: {json.dumps(json.dumps({}))}\n\n"
-                            yield f"event: text\ndata: {json.dumps(accum)}\n\n"
-                        elapsed = (time.time() - t0) * 1000
-                        log_res(f"{OLLAMA_URL}/api/chat", 200, f"[narrative] tokens={token_count}", elapsed)
-                        yield f"event: done\ndata: {{}}\n\n"
-                        return
+        # Stream finished. If [/SCENE] never appeared, fall back to emitting
+        # everything as plain text with an empty scene dict.
+        if not scene_emitted:
+            print(f"  {YELLOW}! No [/SCENE] marker found, emitting raw text{RESET}")
+            yield f"event: scene\ndata: {json.dumps(json.dumps({}))}\n\n"
+            yield f"event: text\ndata: {json.dumps(accum)}\n\n"
+        elapsed = (time.time() - t0) * 1000
+        log_res(f"{llm['endpoint']}", 200, f"[narrative] tokens={token_count}", elapsed)
+        yield f"event: done\ndata: {{}}\n\n"
     except httpx.ConnectError:
-        print(f"  {RED}X Cannot connect to Ollama{RESET}")
-        yield f"event: error\ndata: {json.dumps('Cannot connect to Ollama. Is it running?')}\n\n"
+        endpoint = llm["endpoint"]
+        print(f"  {RED}X Cannot connect to LLM at {endpoint}{RESET}")
+        yield f"event: error\ndata: {json.dumps(f'Cannot connect to LLM at {endpoint}. Is the service running?')}\n\n"
     except Exception as e:
-        print(f"  {RED}X Ollama error: {e}{RESET}")
+        print(f"  {RED}X LLM error: {e}{RESET}")
         yield f"event: error\ndata: {json.dumps(str(e))}\n\n"
 
 
@@ -398,9 +513,10 @@ async def chat_narrative(request: Request):
     messages = body.get("messages", [])
     settings = body.get("settings", {})
     model = settings.get("model", "gemma4:26b")
+    llm = _llm_config(settings)
     last_msg = messages[-1]["content"][:60] if messages else ""
     print(f"\n{'='*60}")
-    log_req("POST", "/api/chat-narrative", f'model={model} last_msg="{last_msg}..."')
+    log_req("POST", "/api/chat-narrative", f'provider={llm["provider"]} model={model} last_msg="{last_msg}..."')
     if messages and messages[-1]["content"].startswith("[NARRATOR"):
         print(f"  {YELLOW}* God-mode command detected{RESET}")
 
@@ -420,7 +536,7 @@ async def chat_narrative(request: Request):
     think = settings.get("think")  # may be None, True, or False
 
     return StreamingResponse(
-        stream_narrative_only(messages, options, model, think=think),
+        stream_narrative_only(messages, options, model, llm, think=think),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -474,8 +590,11 @@ async def extract_image_tags(request: Request):
     character_name = body.get("characterName", "the character")
     model = body.get("model", "gemma4:26b")
     current_scene = body.get("sceneState", {})
+    # The full settings object is passed through so we can pick up
+    # llm_provider / llm_endpoint / llm_api_key for non-Ollama backends.
+    llm = _llm_config(body.get("settings") or body)
 
-    log_req("POST", "/api/extract-image-tags", f"model={model} narrative_len={len(narrative)}")
+    log_req("POST", "/api/extract-image-tags", f"provider={llm['provider']} model={model} narrative_len={len(narrative)}")
     t0 = time.time()
 
     extract_system = f"""You are an image tag generator. Given a roleplay narrative from {character_name} and the current scene state, output a single line of booru-style image tags describing what is visible in the scene RIGHT NOW.
@@ -497,18 +616,15 @@ Example output:
     extract_user = f"Narrative:\n{narrative}\n\nGenerate the booru tags now (one line, comma-separated, no other text):"
 
     try:
-        resp = await ollama_client.post("/api/chat", json={
-            "model": model,
-            "messages": [
+        content = await _complete_chat(
+            messages=[
                 {"role": "system", "content": extract_system},
-                {"role": "user", "content": extract_user}
+                {"role": "user", "content": extract_user},
             ],
-            "stream": False,
-            "think": False,
-            "options": {"temperature": 0.4, "num_predict": 400},
-        })
-        data = resp.json()
-        content = data.get("message", {}).get("content", "")
+            options={"temperature": 0.4, "num_predict": 400},
+            model=model,
+            llm=llm,
+        )
         elapsed = (time.time() - t0) * 1000
 
         # Clean the output: strip markdown, take only the first non-empty line of tags
@@ -548,8 +664,8 @@ Example output:
         log_res("/api/extract-image-tags", 200, f"tags={len(normalized)} dropped={len(dropped)} raw_chars={len(content)}", elapsed)
         return {"tags": tags_str}
     except httpx.ConnectError:
-        print(f"  {RED}X Cannot connect to Ollama for extraction{RESET}")
-        return {"error": "Cannot connect to Ollama", "tags": ""}
+        print(f"  {RED}X Cannot connect to LLM at {llm['endpoint']} for extraction{RESET}")
+        return {"error": f"Cannot connect to LLM at {llm['endpoint']}", "tags": ""}
     except Exception as e:
         print(f"  {RED}X Extract error: {e}{RESET}")
         return {"error": str(e), "tags": ""}
@@ -614,6 +730,7 @@ async def generate_image(request: Request):
 
     final_prompt = _cleanup_prompt(final_prompt)
 
+    sd_endpoint = _sd_endpoint(body)
     payload = {
         "prompt": final_prompt,
         "negative_prompt": body.get("negative_prompt", ""),
@@ -623,31 +740,34 @@ async def generate_image(request: Request):
         "width": body.get("width", 512),
         "height": body.get("height", 768),
     }
-    log_req("POST", f"{FORGE_URL}/sdapi/v1/txt2img", f'steps={payload["steps"]} {payload["width"]}x{payload["height"]}')
+    url = f"{sd_endpoint}/sdapi/v1/txt2img"
+    log_req("POST", url, f'steps={payload["steps"]} {payload["width"]}x{payload["height"]}')
     print(f"  {DIM}prompt ({len(final_prompt)}c):{RESET} {final_prompt}")
     t0 = time.time()
     try:
-        resp = await forge_client.post("/sdapi/v1/txt2img", json=payload)
+        resp = await http_short.post(url, json=payload)
         data = resp.json()
         elapsed = (time.time() - t0) * 1000
         has_image = bool(data.get("images"))
-        log_res(f"{FORGE_URL}/sdapi/v1/txt2img", resp.status_code, f"has_image={has_image}", elapsed)
+        log_res(url, resp.status_code, f"has_image={has_image}", elapsed)
         return {"image": data.get("images", [None])[0], "final_prompt": final_prompt}
     except httpx.ConnectError:
-        print(f"  {RED}X Cannot connect to SD Forge{RESET}")
-        return {"error": "Cannot connect to SD Forge. Is it running with --api?"}
+        print(f"  {RED}X Cannot connect to SD endpoint at {sd_endpoint}{RESET}")
+        return {"error": f"Cannot connect to SD endpoint at {sd_endpoint}. Is it running with --api?"}
     except Exception as e:
-        print(f"  {RED}X SD Forge error: {e}{RESET}")
+        print(f"  {RED}X SD error: {e}{RESET}")
         return {"error": str(e)}
 
 
 @app.get("/api/sd-models")
-async def sd_models():
-    log_req("GET", f"{FORGE_URL}/sdapi/v1/sd-models")
+async def sd_models(endpoint: str = ""):
+    sd = (endpoint or DEFAULT_FORGE_URL).rstrip("/")
+    url = f"{sd}/sdapi/v1/sd-models"
+    log_req("GET", url)
     try:
-        resp = await forge_client.get("/sdapi/v1/sd-models")
+        resp = await http_short.get(url)
         data = resp.json()
-        log_res(f"{FORGE_URL}/sdapi/v1/sd-models", resp.status_code, f"count={len(data)}")
+        log_res(url, resp.status_code, f"count={len(data)}")
         return data
     except Exception as e:
         print(f"  {RED}X {e}{RESET}")
@@ -655,12 +775,14 @@ async def sd_models():
 
 
 @app.get("/api/sd-samplers")
-async def sd_samplers():
-    log_req("GET", f"{FORGE_URL}/sdapi/v1/samplers")
+async def sd_samplers(endpoint: str = ""):
+    sd = (endpoint or DEFAULT_FORGE_URL).rstrip("/")
+    url = f"{sd}/sdapi/v1/samplers"
+    log_req("GET", url)
     try:
-        resp = await forge_client.get("/sdapi/v1/samplers")
+        resp = await http_short.get(url)
         data = resp.json()
-        log_res(f"{FORGE_URL}/sdapi/v1/samplers", resp.status_code, f"count={len(data)}")
+        log_res(url, resp.status_code, f"count={len(data)}")
         return data
     except Exception as e:
         print(f"  {RED}X {e}{RESET}")
@@ -671,31 +793,57 @@ async def sd_samplers():
 async def set_sd_model(request: Request):
     body = await request.json()
     model_name = body.get("model", "")
-    log_req("POST", f"{FORGE_URL}/sdapi/v1/options", f"model={model_name}")
+    sd = _sd_endpoint(body)
+    url = f"{sd}/sdapi/v1/options"
+    log_req("POST", url, f"model={model_name}")
     try:
-        resp = await forge_client.post(
-            "/sdapi/v1/options",
-            json={"sd_model_checkpoint": model_name}
-        )
-        log_res(f"{FORGE_URL}/sdapi/v1/options", resp.status_code)
+        resp = await http_short.post(url, json={"sd_model_checkpoint": model_name})
+        log_res(url, resp.status_code)
         return {"ok": True}
     except Exception as e:
         print(f"  {RED}X {e}{RESET}")
         return {"error": str(e)}
 
 
-@app.get("/api/ollama-models")
-async def ollama_models():
-    log_req("GET", f"{OLLAMA_URL}/api/tags")
+@app.get("/api/llm-models")
+async def llm_models(provider: str = "ollama", endpoint: str = "", api_key: str = ""):
+    """List available models from the configured LLM provider.
+
+    Ollama uses /api/tags; OpenAI-compatible endpoints (llama.cpp,
+    OpenRouter, vLLM, LM Studio, etc.) use /v1/models.
+    """
+    provider = (provider or "ollama").lower()
+    base = (endpoint or DEFAULT_OLLAMA_URL).rstrip("/")
+
     try:
-        resp = await ollama_client.get("/api/tags")
+        if provider == "ollama":
+            url = f"{base}/api/tags"
+            log_req("GET", url)
+            resp = await http_short.get(url)
+            data = resp.json()
+            models = [m["name"] for m in data.get("models", [])]
+            log_res(url, resp.status_code, f"models={len(models)}")
+            return models
+        # OpenAI-compatible
+        url = f"{base}/v1/models"
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        log_req("GET", url, "[openai-compatible]")
+        resp = await http_short.get(url, headers=headers)
         data = resp.json()
-        models = [m["name"] for m in data.get("models", [])]
-        log_res(f"{OLLAMA_URL}/api/tags", resp.status_code, f"models={models}")
+        models = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
+        log_res(url, resp.status_code, f"models={len(models)}")
         return models
     except Exception as e:
         print(f"  {RED}X {e}{RESET}")
         return []
+
+
+# Back-compat alias for older clients that still call /api/ollama-models.
+@app.get("/api/ollama-models")
+async def ollama_models_alias():
+    return await llm_models(provider="ollama", endpoint=DEFAULT_OLLAMA_URL)
 
 
 if FRONTEND_DIST.exists():

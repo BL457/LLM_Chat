@@ -24,10 +24,10 @@ Runs entirely on your own machine. No cloud calls, no telemetry. The only data t
 |---|---|---|
 | **Python** | Backend (FastAPI + httpx) | 3.10 or newer |
 | **Node.js** | Frontend (Vite + React) build | 18 or newer |
-| **Ollama** | Local LLM serving | Latest stable |
+| **An LLM backend** | Generates the chat replies. **Pick one**: [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggerganov/llama.cpp), [OpenRouter](https://openrouter.ai/), or any OpenAI-compatible endpoint (vLLM, LM Studio, text-generation-webui's OpenAI extension, etc.) | — |
 | **Stable Diffusion Forge** *(optional)* | Scene image generation. Skip if you don't want images. | Latest stable, run with `--api` |
 
-The bundled `run.bat` checks the first two and sets up the venv + npm install + frontend build automatically. Ollama and Forge you install separately (see below).
+The bundled `run.bat` checks Python and Node and sets up the venv + npm install + frontend build automatically. The LLM backend and Forge you install / sign up for separately (see below). Both endpoints are configured in **Settings → Connection** at runtime — nothing is hardcoded.
 
 ---
 
@@ -35,7 +35,7 @@ The bundled `run.bat` checks the first two and sets up the venv + npm install + 
 
 1. Install [Python 3.10+](https://www.python.org/downloads/) (tick "Add to PATH").
 2. Install [Node 18+](https://nodejs.org/).
-3. Install [Ollama](https://ollama.com/download) and pull a model (see [Recommended Ollama models](#recommended-ollama-models)).
+3. Set up an LLM backend — see [LLM backends](#llm-backends) for the four supported options. The default config expects [Ollama](https://ollama.com/download) on `http://localhost:11434`.
 4. *(Optional)* Install [Stable Diffusion Forge](https://github.com/lllyasviel/stable-diffusion-webui-forge) and start it with the API enabled (see [Setting up Forge](#setting-up-forge)).
 5. Double-click `run.bat`. It will:
    - create the Python venv if missing
@@ -44,6 +44,7 @@ The bundled `run.bat` checks the first two and sets up the venv + npm install + 
    - `npm run build` in `frontend/`
    - start the FastAPI server on `http://localhost:8000`
 6. Open `http://localhost:8000` in your browser.
+7. Open **Settings → Connection** and pick the LLM provider + endpoint that matches what you've set up.
 
 If you'd rather drive it manually:
 
@@ -59,33 +60,53 @@ venv\Scripts\python.exe server.py
 
 ---
 
-## Setting up Ollama
+## LLM backends
 
-Pull a model from the terminal:
+The app speaks two API dialects — Ollama's native `/api/chat` and the OpenAI-compatible `/v1/chat/completions`. That covers basically everything that runs an LLM. Pick one of the four presets in **Settings → Connection → LLM provider**:
+
+| Provider | Default endpoint | API key? | Notes |
+|---|---|---|---|
+| **Ollama** | `http://localhost:11434` | no | Easiest local option. Ships its own model library — `ollama pull gemma3:27b` and you're done. |
+| **llama.cpp** | `http://localhost:8080` | no | Run `llama-server -m model.gguf -c 16384 --port 8080`. Lighter than Ollama, more knobs, BYO GGUF. |
+| **OpenRouter** | `https://openrouter.ai/api` | yes (`sk-or-...`) | Cloud. Hundreds of models behind one key. Costs money. Useful when you want models too big to run locally. |
+| **Custom (OpenAI-compat)** | (whatever you set) | optional | For LM Studio, vLLM, text-generation-webui's OpenAI extension, etc. Anything that exposes `/v1/chat/completions`. |
+
+The endpoint is editable per-provider, so you can point at LAN addresses, Tailscale hostnames, reverse-proxy URLs, etc. The API key field appears only for providers that need one.
+
+### Setting up Ollama
 
 ```bash
 ollama pull gemma3:27b
 ```
 
-Confirm it's reachable on the default port (`11434`) — visit `http://localhost:11434` in a browser, you should see `Ollama is running`. The app's backend talks to this endpoint at the URL hardcoded in `server.py`:
+Confirm it's reachable: visit `http://localhost:11434` in a browser, you should see `Ollama is running`.
 
-```python
-OLLAMA_URL = "http://localhost:11434"
+### Setting up llama.cpp
+
+Build llama.cpp following [their README](https://github.com/ggerganov/llama.cpp), download a GGUF (e.g. from Hugging Face), then:
+
+```bash
+llama-server -m models/gemma-3-27b.gguf -c 16384 --port 8080 --host 0.0.0.0
 ```
 
-If you run Ollama somewhere else, edit that line.
+The OpenAI-compatible chat endpoint lives at `/v1/chat/completions`. The app handles the rest.
 
-### Recommended Ollama models
+### Setting up OpenRouter
 
-| Model | Notes |
-|---|---|
-| `gemma3:27b` | **Default recommendation.** Strong roleplay output, supports vision (image attachments work), fits on a 24 GB GPU at Q4_K_M. |
-| `gemma3:12b` | Lighter alternative, also vision-capable. |
-| `gemma3:4b` | Smallest vision-capable Gemma — useful on weaker GPUs. |
-| `gemma4:26b` | Mixture-of-experts variant. Faster inference (~4B active params) but no native vision support. |
-| `llama3.1:8b` / `llama3.3:70b` | Fine for chat; vision needs a separate vision model. |
+Sign up at [openrouter.ai](https://openrouter.ai/), generate an API key (`sk-or-v1-...`), paste it into the **API key** field in Settings. Model names look like `anthropic/claude-sonnet-4-5` or `meta-llama/llama-3.3-70b-instruct` — pick from the model dropdown which is auto-populated from `/v1/models`.
 
-**Vision support matters** for the paperclip image-attach feature. If you send a picture to a non-vision model, the model just ignores the image. Switch to a vision-capable model in **Settings → Model** when sending images.
+### Recommended models
+
+| Model | Run via | Notes |
+|---|---|---|
+| `gemma3:27b` | Ollama | **Default recommendation.** Strong roleplay, supports vision (image attachments), fits on a 24 GB GPU at Q4_K_M. |
+| `gemma3:12b` / `gemma3:4b` | Ollama | Lighter alternatives — same shape, also vision-capable. |
+| `gemma4:26b` | Ollama | Mixture-of-experts, fast (~4B active params), but no native vision. |
+| `llama3.3:70b` | Ollama / OpenRouter | Strong general chat. Needs a serious local box, or use OpenRouter. |
+| `meta-llama/llama-3.3-70b-instruct` | OpenRouter | Same model, cloud-hosted, no GPU needed. |
+| `mistralai/mistral-large` | OpenRouter | Solid roleplay output. |
+
+**Vision support matters** for the paperclip image-attach feature. Gemma 3 family is vision-capable; Gemma 4, Llama 3.3, and most local non-vision GGUFs are not. Sending a picture to a non-vision model just gets ignored. Switch models in **Settings → Model** when needed.
 
 ---
 
@@ -109,11 +130,7 @@ Image generation is optional. To enable it:
    - `--api` exposes the `/sdapi/v1/*` endpoints the backend calls.
    - `--listen` lets devices on your LAN reach Forge (useful if you want the server hosting Forge to be different from the one running this app).
 
-3. Confirm Forge is reachable at `http://localhost:7860`. The backend talks to this in `server.py`:
-
-   ```python
-   FORGE_URL = "http://localhost:7860"
-   ```
+3. Confirm Forge is reachable at `http://localhost:7860` (default — change in **Settings → Connection → Image generation endpoint** if it's somewhere else).
 
 ### Recommended SD models
 
@@ -126,6 +143,15 @@ For non-furry photorealistic work, use a SDXL-photoreal checkpoint of your choic
 ## Recommended settings
 
 These are the values the app starts with, tuned for Gemma + Illustrious-XL. Override per-character or globally in the **Settings** overlay.
+
+### Connection (Settings → Connection)
+
+| Field | Default | Notes |
+|---|---|---|
+| LLM provider | `Ollama` | Pick the backend you've set up |
+| LLM endpoint | `http://localhost:11434` | Auto-fills the provider's default; edit if yours lives elsewhere |
+| API key | *(empty)* | Only shown for providers that need one (OpenRouter, custom) |
+| Image gen endpoint | `http://localhost:7860` | Stable Diffusion Forge / A1111 with `--api` |
 
 ### LLM sampling (Settings → Model & Advanced → Sampling)
 
@@ -241,8 +267,10 @@ gemma4-rp/
 
 ## Notes
 
-- Default Ollama model in code (`frontend/src/App.jsx:DEFAULT_SETTINGS`) is `gemma3:27b`. Change in **Settings → Model** at runtime, or edit the constant.
-- Default Forge model is whatever you have in **Settings → Advanced → SD model**. The app calls Forge's options endpoint on change so you don't have to switch checkpoints manually in the Forge UI.
+- LLM and image-gen endpoints are runtime settings, not constants. The `DEFAULT_OLLAMA_URL` / `DEFAULT_FORGE_URL` in `server.py` are only used as fallbacks when the request body or query string doesn't supply an explicit URL.
+- Default LLM provider is `ollama` at `http://localhost:11434`. Default SD endpoint is `http://localhost:7860`. Change either in **Settings → Connection**.
+- Default model name in code (`frontend/src/App.jsx:DEFAULT_SETTINGS.ollamaModel`) is `gemma3:27b`. Override in **Settings → Model**.
+- The app calls Forge's options endpoint when you change SD model in settings, so you don't have to switch checkpoints in the Forge UI manually.
 - The frontend talks to the backend via `/api/*`. In dev (`npm run dev` on `:5173`), Vite's proxy routes those to `:8000`. In production (the built `dist/`) the FastAPI server hosts both.
 - Mobile viewport (≤ 720 px wide): sidebar and conversation are mutually exclusive screens with a back button, Telegram-style. Long-press a message bubble for the context menu (desktop: right-click).
 - Notifications fire only when the page is open in a tab somewhere — closing the tab disables them. For closed-app push you'd need a service worker + Web Push or a foreground-service mobile wrapper, neither of which is included.

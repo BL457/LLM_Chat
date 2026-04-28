@@ -1,21 +1,49 @@
 import React, { useState, useEffect } from 'react'
 import Overlay from './Overlay.jsx'
 import { ICONS } from '../shared.jsx'
-import { listOllamaModels, listSdModels, listSdSamplers, setSdModel } from '../api.js'
+import { listLLMModels, listSdModels, listSdSamplers, setSdModel } from '../api.js'
 import { notificationPermission, requestNotificationPermission } from '../notifications.js'
+
+const LLM_PROVIDERS = [
+  { value: 'ollama',     label: 'Ollama',                 defaultEndpoint: 'http://localhost:11434', wantsApiKey: false },
+  { value: 'llama.cpp',  label: 'llama.cpp',              defaultEndpoint: 'http://localhost:8080',  wantsApiKey: false },
+  { value: 'openrouter', label: 'OpenRouter',             defaultEndpoint: 'https://openrouter.ai/api', wantsApiKey: true },
+  { value: 'custom',     label: 'Custom (OpenAI-compat)', defaultEndpoint: 'http://localhost:8000',  wantsApiKey: true },
+]
 
 export default function Settings({ settings, onUpdate, onClose }) {
   const [advanced, setAdvanced] = useState(false)
-  const [ollamaModels, setOllamaModels] = useState([])
+  const [llmModels, setLlmModels] = useState([])
   const [sdModels, setSdModels] = useState([])
   const [sdSamplers, setSdSamplers] = useState([])
   const set = (k, v) => onUpdate({ ...settings, [k]: v })
 
+  const provider = settings.llmProvider || 'ollama'
+  const llmEndpoint = settings.llmEndpoint || 'http://localhost:11434'
+  const llmApiKey = settings.llmApiKey || ''
+  const sdEndpoint = settings.sdEndpoint || 'http://localhost:7860'
+  const providerInfo = LLM_PROVIDERS.find(p => p.value === provider) || LLM_PROVIDERS[0]
+
+  // Re-fetch model lists whenever the connection settings change.
   useEffect(() => {
-    listOllamaModels().then(r => setOllamaModels(r || []))
-    listSdModels().then(r => setSdModels(r || []))
-    listSdSamplers().then(r => setSdSamplers(r || []))
-  }, [])
+    listLLMModels({ provider, endpoint: llmEndpoint, apiKey: llmApiKey }).then(r => setLlmModels(r || []))
+  }, [provider, llmEndpoint, llmApiKey])
+  useEffect(() => {
+    listSdModels(sdEndpoint).then(r => setSdModels(r || []))
+    listSdSamplers(sdEndpoint).then(r => setSdSamplers(r || []))
+  }, [sdEndpoint])
+
+  const onProviderChange = (next) => {
+    const info = LLM_PROVIDERS.find(p => p.value === next)
+    // When switching, swap to the new provider's default endpoint unless the
+    // user has clearly already typed something that doesn't match the old default.
+    const currentMatchesOldDefault = settings.llmEndpoint === providerInfo.defaultEndpoint || !settings.llmEndpoint
+    onUpdate({
+      ...settings,
+      llmProvider: next,
+      llmEndpoint: currentMatchesOldDefault && info ? info.defaultEndpoint : settings.llmEndpoint,
+    })
+  }
 
   return (
     <Overlay onClose={onClose} width={620}>
@@ -24,11 +52,30 @@ export default function Settings({ settings, onUpdate, onClose }) {
         <button className="sl-icon-btn" onClick={onClose}>{ICONS.close}</button>
       </div>
       <div className="sl-scroll" style={{ padding: 24, overflowY: 'auto' }}>
+        <Group title="Connection">
+          <Row label="LLM provider">
+            <select className="sl-input" value={provider} onChange={e => onProviderChange(e.target.value)}>
+              {LLM_PROVIDERS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+          </Row>
+          <Row label="LLM endpoint">
+            <input className="sl-input" value={llmEndpoint} onChange={e => set('llmEndpoint', e.target.value)} placeholder={providerInfo.defaultEndpoint} />
+          </Row>
+          {providerInfo.wantsApiKey && (
+            <Row label="API key">
+              <input className="sl-input" type="password" value={llmApiKey} onChange={e => set('llmApiKey', e.target.value)} placeholder="sk-..." autoComplete="off" />
+            </Row>
+          )}
+          <Row label="Image generation endpoint (Stable Diffusion)">
+            <input className="sl-input" value={sdEndpoint} onChange={e => set('sdEndpoint', e.target.value)} placeholder="http://localhost:7860" />
+          </Row>
+        </Group>
+
         <Group title="Model">
           <Row label="Language model">
             <select className="sl-input" value={settings.ollamaModel || ''} onChange={e => set('ollamaModel', e.target.value)}>
-              {ollamaModels.length === 0 && <option value={settings.ollamaModel || ''}>{settings.ollamaModel || '(none)'}</option>}
-              {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
+              {llmModels.length === 0 && <option value={settings.ollamaModel || ''}>{settings.ollamaModel || '(none)'}</option>}
+              {llmModels.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </Row>
           <Row label="Context size">
@@ -92,7 +139,7 @@ export default function Settings({ settings, onUpdate, onClose }) {
 
             <Group title="Image generation (Stable Diffusion)">
               <Row label="SD model">
-                <select className="sl-input" value={settings.sdModel || ''} onChange={e => { const v = e.target.value; set('sdModel', v); if (v) setSdModel(v) }}>
+                <select className="sl-input" value={settings.sdModel || ''} onChange={e => { const v = e.target.value; set('sdModel', v); if (v) setSdModel(v, sdEndpoint) }}>
                   <option value="">(none)</option>
                   {sdModels.map(m => <option key={m.title || m} value={m.title || m}>{m.model_name || m.title || m}</option>)}
                 </select>
