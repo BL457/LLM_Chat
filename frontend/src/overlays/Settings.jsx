@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import Overlay from './Overlay.jsx'
 import { ICONS } from '../shared.jsx'
-import { listLLMModels, listSdModels, listSdSamplers, setSdModel } from '../api.js'
+import { listLLMModels, listSdModels, listSdSamplers, setSdModel, testLLMConnection, testSdConnection } from '../api.js'
 import { notificationPermission, requestNotificationPermission } from '../notifications.js'
 
 const LLM_PROVIDERS = [
@@ -12,19 +12,23 @@ const LLM_PROVIDERS = [
 ]
 
 export default function Settings({ settings, onUpdate, onClose }) {
+  // Local draft — committed to the parent only when Save is clicked.
+  const [draft, setDraft] = useState(settings)
   const [advanced, setAdvanced] = useState(false)
   const [llmModels, setLlmModels] = useState([])
   const [sdModels, setSdModels] = useState([])
   const [sdSamplers, setSdSamplers] = useState([])
-  const set = (k, v) => onUpdate({ ...settings, [k]: v })
 
-  const provider = settings.llmProvider || 'ollama'
-  const llmEndpoint = settings.llmEndpoint || 'http://localhost:11434'
-  const llmApiKey = settings.llmApiKey || ''
-  const sdEndpoint = settings.sdEndpoint || 'http://localhost:7860'
+  const set = (k, v) => setDraft(d => ({ ...d, [k]: v }))
+
+  const provider = draft.llmProvider || 'ollama'
+  const llmEndpoint = draft.llmEndpoint || 'http://localhost:11434'
+  const llmApiKey = draft.llmApiKey || ''
+  const sdEndpoint = draft.sdEndpoint || 'http://localhost:7860'
   const providerInfo = LLM_PROVIDERS.find(p => p.value === provider) || LLM_PROVIDERS[0]
 
-  // Re-fetch model lists whenever the connection settings change.
+  // Re-fetch model lists whenever the draft connection settings change so the
+  // dropdown reflects what the user is configuring, even before Save.
   useEffect(() => {
     listLLMModels({ provider, endpoint: llmEndpoint, apiKey: llmApiKey }).then(r => setLlmModels(r || []))
   }, [provider, llmEndpoint, llmApiKey])
@@ -35,21 +39,41 @@ export default function Settings({ settings, onUpdate, onClose }) {
 
   const onProviderChange = (next) => {
     const info = LLM_PROVIDERS.find(p => p.value === next)
-    // When switching, swap to the new provider's default endpoint unless the
-    // user has clearly already typed something that doesn't match the old default.
-    const currentMatchesOldDefault = settings.llmEndpoint === providerInfo.defaultEndpoint || !settings.llmEndpoint
-    onUpdate({
-      ...settings,
+    const currentMatchesOldDefault = draft.llmEndpoint === providerInfo.defaultEndpoint || !draft.llmEndpoint
+    setDraft(d => ({
+      ...d,
       llmProvider: next,
-      llmEndpoint: currentMatchesOldDefault && info ? info.defaultEndpoint : settings.llmEndpoint,
-    })
+      llmEndpoint: currentMatchesOldDefault && info ? info.defaultEndpoint : d.llmEndpoint,
+    }))
+  }
+
+  // Cheap dirty check — JSON-stringify the relevant fields. Good enough for
+  // a settings overlay; nothing here is huge.
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(settings)
+
+  const handleSave = () => {
+    onUpdate(draft)
+    // If the SD checkpoint was changed, tell Forge to switch.
+    if (draft.sdModel && draft.sdModel !== settings.sdModel) {
+      setSdModel(draft.sdModel, draft.sdEndpoint || sdEndpoint)
+    }
+    onClose()
+  }
+  const handleCancel = () => {
+    onClose()
   }
 
   return (
     <Overlay onClose={onClose} width={620}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--sl-border)' }}>
-        <div style={{ fontSize: 16, fontWeight: 600 }}>Settings</div>
-        <button className="sl-icon-btn" onClick={onClose}>{ICONS.close}</button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--sl-border)' }}>
+        <div style={{ fontSize: 16, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+          Settings
+          {isDirty && <span style={{ fontSize: 11, color: 'var(--sl-accent)', fontWeight: 500 }}>· unsaved</span>}
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className="sl-btn-ghost" onClick={handleCancel}>Cancel</button>
+          <button className="sl-btn" onClick={handleSave} disabled={!isDirty}>Save</button>
+        </div>
       </div>
       <div className="sl-scroll" style={{ padding: 24, overflowY: 'auto' }}>
         <Group title="Connection">
@@ -66,37 +90,46 @@ export default function Settings({ settings, onUpdate, onClose }) {
               <input className="sl-input" type="password" value={llmApiKey} onChange={e => set('llmApiKey', e.target.value)} placeholder="sk-..." autoComplete="off" />
             </Row>
           )}
+          <TestButton run={() => testLLMConnection({ provider, endpoint: llmEndpoint, apiKey: llmApiKey })}
+                      label="Test LLM connection"
+                      okText={(n) => `Connected — ${n} model${n === 1 ? '' : 's'} available`} />
+
+          <div style={{ height: 1, background: 'var(--sl-border)', margin: '4px 0' }} />
+
           <Row label="Image generation endpoint (Stable Diffusion)">
             <input className="sl-input" value={sdEndpoint} onChange={e => set('sdEndpoint', e.target.value)} placeholder="http://localhost:7860" />
           </Row>
+          <TestButton run={() => testSdConnection({ endpoint: sdEndpoint })}
+                      label="Test image generation connection"
+                      okText={(n) => `Connected — ${n} checkpoint${n === 1 ? '' : 's'} loaded`} />
         </Group>
 
         <Group title="Model">
           <Row label="Language model">
             <ModelComboBox
-              value={settings.ollamaModel || ''}
+              value={draft.ollamaModel || ''}
               options={llmModels}
               onChange={(v) => set('ollamaModel', v)}
               placeholder="Search or type a model name…"
             />
           </Row>
           <Row label="Context size">
-            <select className="sl-input" value={settings.numCtx ?? 16384} onChange={e => set('numCtx', parseInt(e.target.value))}>
+            <select className="sl-input" value={draft.numCtx ?? 16384} onChange={e => set('numCtx', parseInt(e.target.value))}>
               <option value={4096}>4k tokens</option>
               <option value={8192}>8k tokens</option>
               <option value={16384}>16k tokens</option>
               <option value={32768}>32k tokens</option>
             </select>
           </Row>
-          <Row label={`Temperature · ${(settings.temperature ?? 1).toFixed(2)}`}>
-            <input type="range" min="0" max="1.5" step="0.05" value={settings.temperature ?? 1}
+          <Row label={`Temperature · ${(draft.temperature ?? 1).toFixed(2)}`}>
+            <input type="range" min="0" max="1.5" step="0.05" value={draft.temperature ?? 1}
               onChange={e => set('temperature', parseFloat(e.target.value))}
               style={{ width: '100%', accentColor: 'var(--sl-accent)' }} />
           </Row>
         </Group>
 
         <Group title="Behavior">
-          <Toggle label="Show thinking" sub="Stream the model's chain-of-thought (if the model supports it)." value={settings.think === 'true' || settings.think === true} onChange={v => set('think', v ? 'true' : 'false')} />
+          <Toggle label="Show thinking" sub="Stream the model's chain-of-thought (if the model supports it)." value={draft.think === 'true' || draft.think === true} onChange={v => set('think', v ? 'true' : 'false')} />
         </Group>
 
         <Group title="Notifications">
@@ -105,7 +138,7 @@ export default function Settings({ settings, onUpdate, onClose }) {
 
         <Group title="Display">
           <Row label="Density">
-            <Segmented value={settings.density || 'cozy'} onChange={v => set('density', v)} options={[
+            <Segmented value={draft.density || 'cozy'} onChange={v => set('density', v)} options={[
               { value: 'cozy', label: 'Cozy' },
               { value: 'compact', label: 'Compact' },
             ]} />
@@ -125,64 +158,99 @@ export default function Settings({ settings, onUpdate, onClose }) {
         {advanced && (
           <>
             <Group title="Sampling">
-              <Slider label="top_k" min={1} max={200} step={1} value={settings.topK ?? 64} onChange={v => set('topK', v)} />
-              <Slider label="top_p" min={0} max={1} step={0.01} value={settings.topP ?? 0.95} onChange={v => set('topP', v)} />
-              <Slider label="min_p" min={0} max={0.5} step={0.005} value={settings.minP ?? 0.01} onChange={v => set('minP', v)} />
-              <Slider label="repeat_penalty" min={1} max={1.5} step={0.01} value={settings.repeatPenalty ?? 1.05} onChange={v => set('repeatPenalty', v)} />
-              <Slider label="repeat_last_n" min={64} max={4096} step={64} value={settings.repeatLastN ?? 1024} onChange={v => set('repeatLastN', v)} />
-              <Slider label="num_predict" min={64} max={4096} step={64} value={settings.numPredict ?? 2048} onChange={v => set('numPredict', v)} />
+              <Slider label="top_k" min={1} max={200} step={1} value={draft.topK ?? 64} onChange={v => set('topK', v)} />
+              <Slider label="top_p" min={0} max={1} step={0.01} value={draft.topP ?? 0.95} onChange={v => set('topP', v)} />
+              <Slider label="min_p" min={0} max={0.5} step={0.005} value={draft.minP ?? 0.01} onChange={v => set('minP', v)} />
+              <Slider label="repeat_penalty" min={1} max={1.5} step={0.01} value={draft.repeatPenalty ?? 1.05} onChange={v => set('repeatPenalty', v)} />
+              <Slider label="repeat_last_n" min={64} max={4096} step={64} value={draft.repeatLastN ?? 1024} onChange={v => set('repeatLastN', v)} />
+              <Slider label="num_predict" min={64} max={4096} step={64} value={draft.numPredict ?? 2048} onChange={v => set('numPredict', v)} />
             </Group>
 
             <Group title="Prompt">
               <Row label="Retry prompt (when format breaks)">
-                <textarea className="sl-textarea" value={settings.retryPrompt || ''} onChange={e => set('retryPrompt', e.target.value)} rows={2} />
+                <textarea className="sl-textarea" value={draft.retryPrompt || ''} onChange={e => set('retryPrompt', e.target.value)} rows={2} />
               </Row>
             </Group>
 
             <Group title="Image generation (Stable Diffusion)">
               <Row label="SD model">
-                <select className="sl-input" value={settings.sdModel || ''} onChange={e => { const v = e.target.value; set('sdModel', v); if (v) setSdModel(v, sdEndpoint) }}>
+                <select className="sl-input" value={draft.sdModel || ''} onChange={e => set('sdModel', e.target.value)}>
                   <option value="">(none)</option>
                   {sdModels.map(m => <option key={m.title || m} value={m.title || m}>{m.model_name || m.title || m}</option>)}
                 </select>
               </Row>
               <Row label="Sampler">
-                <select className="sl-input" value={settings.samplerName || ''} onChange={e => set('samplerName', e.target.value)}>
+                <select className="sl-input" value={draft.samplerName || ''} onChange={e => set('samplerName', e.target.value)}>
                   <option value="">(default)</option>
                   {sdSamplers.map(s => <option key={s.name || s} value={s.name || s}>{s.name || s}</option>)}
                 </select>
               </Row>
-              <Row label={`Steps · ${settings.steps ?? 40}`}>
-                <input type="range" min="1" max="80" step="1" value={settings.steps ?? 40} onChange={e => set('steps', parseInt(e.target.value))} style={{ width: '100%', accentColor: 'var(--sl-accent)' }} />
+              <Row label={`Steps · ${draft.steps ?? 40}`}>
+                <input type="range" min="1" max="80" step="1" value={draft.steps ?? 40} onChange={e => set('steps', parseInt(e.target.value))} style={{ width: '100%', accentColor: 'var(--sl-accent)' }} />
               </Row>
-              <Row label={`CFG scale · ${(settings.cfgScale ?? 4).toFixed(1)}`}>
-                <input type="range" min="1" max="20" step="0.5" value={settings.cfgScale ?? 4} onChange={e => set('cfgScale', parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--sl-accent)' }} />
+              <Row label={`CFG scale · ${(draft.cfgScale ?? 4).toFixed(1)}`}>
+                <input type="range" min="1" max="20" step="0.5" value={draft.cfgScale ?? 4} onChange={e => set('cfgScale', parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--sl-accent)' }} />
               </Row>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <Row label="Width">
-                  <input className="sl-input" type="number" min="256" max="2048" step="64" value={settings.width ?? 1024} onChange={e => set('width', parseInt(e.target.value))} />
+                  <input className="sl-input" type="number" min="256" max="2048" step="64" value={draft.width ?? 1024} onChange={e => set('width', parseInt(e.target.value))} />
                 </Row>
                 <Row label="Height">
-                  <input className="sl-input" type="number" min="256" max="2048" step="64" value={settings.height ?? 1024} onChange={e => set('height', parseInt(e.target.value))} />
+                  <input className="sl-input" type="number" min="256" max="2048" step="64" value={draft.height ?? 1024} onChange={e => set('height', parseInt(e.target.value))} />
                 </Row>
               </div>
               <Row label="General positive tags">
-                <textarea className="sl-textarea" value={settings.generalTags || ''} onChange={e => set('generalTags', e.target.value)} rows={3} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }} />
+                <textarea className="sl-textarea" value={draft.generalTags || ''} onChange={e => set('generalTags', e.target.value)} rows={3} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }} />
               </Row>
               <Row label="Negative prompt">
-                <textarea className="sl-textarea" value={settings.negPrompt || ''} onChange={e => set('negPrompt', e.target.value)} rows={3} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }} />
+                <textarea className="sl-textarea" value={draft.negPrompt || ''} onChange={e => set('negPrompt', e.target.value)} rows={3} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }} />
               </Row>
             </Group>
 
             <Group title="System prompt template">
               <Row label="Wraps every character's persona. Placeholders: {CHARACTER_NAME}, {CHARACTER_PROMPT}, {SCENE_STATE}.">
-                <textarea className="sl-textarea" value={settings.rpProtocol || ''} onChange={e => set('rpProtocol', e.target.value)} rows={8} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }} />
+                <textarea className="sl-textarea" value={draft.rpProtocol || ''} onChange={e => set('rpProtocol', e.target.value)} rows={8} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }} />
               </Row>
             </Group>
           </>
         )}
       </div>
     </Overlay>
+  )
+}
+
+// Connection-test button. Clicking runs the supplied async `run` function;
+// shows ✓ green / ✗ red inline once it completes. Doesn't auto-dismiss —
+// the result stays visible until the next click.
+function TestButton({ run, label, okText }) {
+  const [state, setState] = useState({ status: 'idle' })
+
+  const click = async () => {
+    setState({ status: 'testing' })
+    try {
+      const value = await run()
+      setState({ status: 'ok', value })
+    } catch (e) {
+      setState({ status: 'fail', error: e?.message || String(e) })
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', paddingTop: 4 }}>
+      <button className="sl-btn-ghost" onClick={click} disabled={state.status === 'testing'}>
+        {state.status === 'testing' ? 'Testing…' : label}
+      </button>
+      {state.status === 'ok' && (
+        <span style={{ fontSize: 12, color: 'var(--sl-online)' }}>
+          ✓ {okText ? okText(state.value) : 'Connected'}
+        </span>
+      )}
+      {state.status === 'fail' && (
+        <span style={{ fontSize: 12, color: '#e07b7b', wordBreak: 'break-word', flex: 1, minWidth: 200 }}>
+          ✗ {state.error}
+        </span>
+      )}
+    </div>
   )
 }
 

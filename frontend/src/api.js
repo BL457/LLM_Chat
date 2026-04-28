@@ -121,6 +121,32 @@ export async function listLLMModels({ provider = 'ollama', endpoint = 'http://lo
   } catch { return [] }
 }
 
+// Strict connectivity test — uses the backend's dedicated test endpoints
+// which surface real error messages instead of swallowing them.
+export async function testLLMConnection({ provider, endpoint, apiKey }) {
+  const r = await fetch('/api/test-llm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, endpoint, api_key: apiKey || '' }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  const data = await r.json()
+  if (!data.ok) throw new Error(data.error || 'unknown error')
+  return data.models
+}
+
+export async function testSdConnection({ endpoint }) {
+  const r = await fetch('/api/test-sd', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint }),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  const data = await r.json()
+  if (!data.ok) throw new Error(data.error || 'unknown error')
+  return data.models
+}
+
 export async function listSdModels(endpoint = 'http://localhost:7860') {
   try {
     const r = await fetch(`/api/sd-models?endpoint=${encodeURIComponent(endpoint)}`)

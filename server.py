@@ -846,6 +846,62 @@ async def ollama_models_alias():
     return await llm_models(provider="ollama", endpoint=DEFAULT_OLLAMA_URL)
 
 
+@app.post("/api/test-llm")
+async def test_llm(request: Request):
+    """Strict connectivity test for the configured LLM provider — surfaces
+    real error messages (the regular /api/llm-models swallows them so the
+    dropdown can stay populated)."""
+    body = await request.json()
+    provider = (body.get("provider") or "ollama").lower()
+    endpoint = (body.get("endpoint") or DEFAULT_OLLAMA_URL).rstrip("/")
+    api_key = body.get("api_key") or ""
+    try:
+        if provider == "ollama":
+            url = f"{endpoint}/api/tags"
+            resp = await http_short.get(url)
+            resp.raise_for_status()
+            count = len(resp.json().get("models", []))
+        else:
+            url = f"{endpoint}/v1/models"
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            resp = await http_short.get(url, headers=headers)
+            resp.raise_for_status()
+            count = len(resp.json().get("data", []))
+        return {"ok": True, "models": count, "endpoint": endpoint}
+    except httpx.ConnectError:
+        return {"ok": False, "error": f"Could not connect to {endpoint}"}
+    except httpx.HTTPStatusError as e:
+        msg = f"HTTP {e.response.status_code}"
+        try:
+            err = e.response.json()
+            if isinstance(err, dict) and err.get("error"):
+                msg += f": {err['error'].get('message') or err['error']}"
+        except Exception:
+            pass
+        return {"ok": False, "error": msg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/test-sd")
+async def test_sd(request: Request):
+    """Strict connectivity test for the SD endpoint."""
+    body = await request.json()
+    endpoint = (body.get("endpoint") or DEFAULT_FORGE_URL).rstrip("/")
+    try:
+        resp = await http_short.get(f"{endpoint}/sdapi/v1/sd-models")
+        resp.raise_for_status()
+        data = resp.json()
+        count = len(data) if isinstance(data, list) else 0
+        return {"ok": True, "models": count, "endpoint": endpoint}
+    except httpx.ConnectError:
+        return {"ok": False, "error": f"Could not connect to {endpoint}"}
+    except httpx.HTTPStatusError as e:
+        return {"ok": False, "error": f"HTTP {e.response.status_code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
 
