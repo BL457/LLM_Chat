@@ -460,6 +460,7 @@ async def stream_narrative_only(messages: list, options: dict, model: str, llm: 
     """
     accum = ""
     scene_emitted = False
+    narrative_started = False  # have we emitted any non-whitespace text yet?
     token_count = 0
     t0 = time.time()
 
@@ -481,19 +482,30 @@ async def stream_narrative_only(messages: list, options: dict, model: str, llm: 
                     scene_emitted = True
 
                     narrative_start = marker_idx + len(SCENE_END_MARKER)
-                    tail = accum[narrative_start:].lstrip("\r\n")
+                    tail = accum[narrative_start:].lstrip()  # strip ALL leading whitespace, not just \r\n
                     if tail:
                         yield f"event: text\ndata: {json.dumps(tail)}\n\n"
+                        narrative_started = True
                 # else: keep buffering — no emit until marker arrives
             else:
-                yield f"event: text\ndata: {json.dumps(content)}\n\n"
+                # While we haven't yet emitted any real content, swallow purely
+                # whitespace tokens and lstrip the first non-whitespace one.
+                # Stops blank lines / leading spaces leaking into the chat bubble.
+                if not narrative_started:
+                    stripped = content.lstrip()
+                    if stripped:
+                        yield f"event: text\ndata: {json.dumps(stripped)}\n\n"
+                        narrative_started = True
+                    # else: pure whitespace before any real text — drop it
+                else:
+                    yield f"event: text\ndata: {json.dumps(content)}\n\n"
 
         # Stream finished. If [/SCENE] never appeared, fall back to emitting
-        # everything as plain text with an empty scene dict.
+        # everything as plain text with an empty scene dict — still trimmed.
         if not scene_emitted:
             print(f"  {YELLOW}! No [/SCENE] marker found, emitting raw text{RESET}")
             yield f"event: scene\ndata: {json.dumps(json.dumps({}))}\n\n"
-            yield f"event: text\ndata: {json.dumps(accum)}\n\n"
+            yield f"event: text\ndata: {json.dumps(accum.lstrip())}\n\n"
         elapsed = (time.time() - t0) * 1000
         log_res(f"{llm['endpoint']}", 200, f"[narrative] tokens={token_count}", elapsed)
         yield f"event: done\ndata: {{}}\n\n"

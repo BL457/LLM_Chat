@@ -400,14 +400,17 @@ export default function App() {
       }
     }
 
-    // Finalise the message
+    // Finalise the message — trim any stray leading/trailing whitespace
+    // (server already strips the leading run, this is belt-and-braces and
+    // also catches trailing newlines).
+    const cleanText = (fullText || '').trim()
     let finalMsg
     setChatHistory(prev => {
       const cur = prev[charId] || []
       const idx = cur.findIndex(m => m.id === assistantId)
       if (idx < 0) return prev
       const next = [...cur]
-      next[idx] = { ...next[idx], text: fullText, streaming: false }
+      next[idx] = { ...next[idx], text: cleanText, streaming: false }
       finalMsg = next[idx]
       const result = { ...prev, [charId]: next }
       saveState('chatHistory', result).catch(() => {})
