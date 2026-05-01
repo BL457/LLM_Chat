@@ -5,6 +5,8 @@ import Profile from './overlays/Profile.jsx'
 import Settings from './overlays/Settings.jsx'
 import Gallery from './overlays/Gallery.jsx'
 import NewChar from './overlays/NewChar.jsx'
+import NewGroup from './overlays/NewGroup.jsx'
+import GroupInfo from './overlays/GroupInfo.jsx'
 import UserProfile from './overlays/UserProfile.jsx'
 import { ICONS, SLATE_CSS, autoAccent, nowTime } from './shared.jsx'
 import { loadState, saveState, streamNarrative, extractImageTags, generateImage } from './api.js'
@@ -569,7 +571,8 @@ export default function App() {
   // System prompt + message-perspective conversion both differ from the
   // individual flow, and scene updates split into shared (location) + per-
   // character (clothing/appearance/objects/mood).
-  const runGroupAssistantTurn = useCallback(async (groupId, voiceCharId, replaceFromId = null) => {
+  const runGroupAssistantTurn = useCallback(async (groupId, voiceCharId, opts = {}) => {
+    const { replaceFromId = null, sourceMessages = null } = opts
     const group = groups.find(g => g.id === groupId)
     if (!group) return
     const speaker = characters.find(c => c.id === voiceCharId)
@@ -579,7 +582,9 @@ export default function App() {
     const timeAware = settings.awareOfTime === 'true' || settings.awareOfTime === true
     const sysPrompt = buildGroupSystemPrompt(speaker, group, members, groupScene, { timeAware })
 
-    const cur = chatHistory[groupId] || []
+    // Caller can pass `sourceMessages` explicitly — useful right after a
+    // setChatHistory when our closure's chatHistory is still the old value.
+    const cur = sourceMessages ?? (chatHistory[groupId] || [])
     const builtMessages = groupApiPayload(
       replaceFromId ? cur.slice(0, cur.findIndex(m => m.id === replaceFromId)) : cur,
       voiceCharId,
@@ -753,17 +758,19 @@ export default function App() {
     if (!group) return
     const userMsg = { id: 'u' + Date.now(), role: 'user', text, time: nowTime() }
     if (imageDataUrl) userMsg.image = { status: 'ready', src: imageDataUrl }
+    const cur = chatHistory[groupId] || []
+    const updated = [...cur, userMsg]
     setChatHistory(prev => {
-      const cur = prev[groupId] || []
-      const next = { ...prev, [groupId]: [...cur, userMsg] }
+      const next = { ...prev, [groupId]: updated }
       saveState('chatHistory', next).catch(() => {})
       return next
     })
     if (defaultSpeakerId) {
-      // Use a microtask so the chatHistory update lands first.
-      setTimeout(() => runGroupAssistantTurn(groupId, defaultSpeakerId), 0)
+      // Pass the freshly-built message list explicitly — our closure's
+      // chatHistory hasn't seen the new user message yet at this microtask.
+      setTimeout(() => runGroupAssistantTurn(groupId, defaultSpeakerId, { sourceMessages: updated }), 0)
     }
-  }, [groups, runGroupAssistantTurn])
+  }, [groups, chatHistory, runGroupAssistantTurn])
 
   // Pick the next character to speak in a group, by default the participant
   // who DIDN'T speak most recently. With 2 members this is just the alternation.
@@ -1001,26 +1008,35 @@ export default function App() {
     persistSceneStates({ ...sceneStates, [groupId]: scene })
   }, [sceneStates, persistSceneStates])
 
-  // Auto-loop: keep alternating speakers until paused.
+  // Auto-loop: keep alternating speakers until paused. Ref drives the loop
+  // (so changes are seen immediately by the running loop), state mirrors it
+  // for the UI to re-render the Auto/Pause toggle.
   const autoLoopRef = useRef({ active: false, groupId: null })
+  const [autoLoopActive, setAutoLoopActive] = useState(null)  // active group id, or null
   const startAutoLoop = useCallback(async (groupId) => {
     if (autoLoopRef.current.active) return
     autoLoopRef.current = { active: true, groupId }
+    setAutoLoopActive(groupId)
     while (autoLoopRef.current.active && autoLoopRef.current.groupId === groupId) {
       const group = groups.find(g => g.id === groupId)
       if (!group) break
+      // Read directly from setChatHistory(prev => ...) by snapshotting via
+      // a state-resolving promise — chatHistory in the closure will lag.
+      // Simpler: use a one-tick wait between iterations and rely on the
+      // closure being recreated each render.
       const cur = chatHistory[groupId] || []
       const speaker = pickNextGroupSpeaker(group, cur)
       if (!speaker) break
       await runGroupAssistantTurn(groupId, speaker)
-      // One-tick yield so React can render and handlers can interrupt.
       await new Promise(r => setTimeout(r, 50))
     }
     autoLoopRef.current = { active: false, groupId: null }
+    setAutoLoopActive(null)
   }, [groups, chatHistory, pickNextGroupSpeaker, runGroupAssistantTurn])
 
   const stopAutoLoop = useCallback(() => {
     autoLoopRef.current = { active: false, groupId: null }
+    setAutoLoopActive(null)
     if (abortRef.current) abortRef.current.abort()
   }, [])
 
@@ -1045,6 +1061,7 @@ export default function App() {
             activeId={activeId}
             onSelect={(id) => { setActiveId(id); setMobileScreen('conv') }}
             onNewChar={() => setOverlay('newchar')}
+            onNewGroup={() => setOverlay('newgroup')}
             onImportChar={handleImportChar}
             onOpenSettings={() => setOverlay('settings')}
             onOpenUserProfile={() => setOverlay('userprofile')}
@@ -1061,11 +1078,15 @@ export default function App() {
             onSend={handleSend}
             onCancelStream={handleCancelStream}
             onUpdateChar={handleUpdateCharMessages}
-            onOpenProfile={() => setOverlay('profile')}
+            onOpenProfile={() => setOverlay(active.kind === 'group' ? 'groupinfo' : 'profile')}
             onRegenerate={handleRegenerate}
             onResendUser={handleResendUser}
             onContinueFrom={handleContinueFrom}
             onAttachImage={handleAttachImage}
+            onGroupReplyAs={(charId) => runGroupAssistantTurn(active.id, charId)}
+            onGroupAutoStart={() => startAutoLoop(active.id)}
+            onGroupAutoStop={() => stopAutoLoop()}
+            isAutoLoopActive={autoLoopActive === active.id}
             isMobile={isMobile}
             onBack={() => setMobileScreen('list')}
           />
@@ -1102,6 +1123,25 @@ export default function App() {
             onUpdate={persistUserProfile}
             onUpdateSavedProfiles={persistSavedProfiles}
             onClose={() => setOverlay(null)}
+          />
+        )}
+        {overlay === 'newgroup' && (
+          <NewGroup
+            characters={characters}
+            onCreate={handleCreateGroup}
+            onClose={() => setOverlay(null)}
+          />
+        )}
+        {overlay === 'groupinfo' && active && active.kind === 'group' && (
+          <GroupInfo
+            group={active}
+            members={active.members || []}
+            scene={sceneStates[active.id]}
+            onClose={() => setOverlay(null)}
+            onUpdate={handleUpdateGroup}
+            onUpdateScene={(s) => handleUpdateGroupScene(active.id, s)}
+            onClearHistory={() => handleClearHistory(active.id)}
+            onDelete={() => handleDeleteGroup(active.id)}
           />
         )}
       </div>

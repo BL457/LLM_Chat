@@ -1,10 +1,22 @@
-import React, { useRef, useState } from 'react'
-import { Avatar, ICONS } from './shared.jsx'
+import React, { useEffect, useRef, useState } from 'react'
+import { Avatar, GroupAvatar, ICONS } from './shared.jsx'
 
-export default function Sidebar({ characters, activeId, onSelect, onNewChar, onImportChar, onOpenSettings, onOpenUserProfile, userProfile, isMobile }) {
+export default function Sidebar({ characters, activeId, onSelect, onNewChar, onNewGroup, onImportChar, onOpenSettings, onOpenUserProfile, userProfile, isMobile }) {
   const [search, setSearch] = useState('')
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
   const importRef = useRef(null)
+  const addMenuRef = useRef(null)
   const filtered = characters.filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
+
+  // Close the + Add popover on outside click.
+  useEffect(() => {
+    if (!addMenuOpen) return
+    const onDoc = (e) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target)) setAddMenuOpen(false)
+    }
+    window.addEventListener('mousedown', onDoc)
+    return () => window.removeEventListener('mousedown', onDoc)
+  }, [addMenuOpen])
 
   const onPickImport = (e) => {
     const f = e.target.files?.[0]
@@ -60,30 +72,52 @@ export default function Sidebar({ characters, activeId, onSelect, onNewChar, onI
           </div>
         )}
       </div>
-      <div style={{ padding: 12, borderTop: '1px solid var(--sl-border)', display: 'flex', gap: 6 }}>
+      <div ref={addMenuRef} style={{ padding: 12, borderTop: '1px solid var(--sl-border)', position: 'relative' }}>
         <input ref={importRef} type="file" accept=".llmchar,.json,application/json" onChange={onPickImport} style={{ display: 'none' }} />
-        <button onClick={onNewChar} style={{
-          flex: 1, background: 'var(--sl-surface)', color: 'var(--sl-text)',
+        <button onClick={() => setAddMenuOpen(o => !o)} style={{
+          width: '100%', background: 'var(--sl-surface)', color: 'var(--sl-text)',
           border: '1px dashed var(--sl-border-strong)', padding: '11px', borderRadius: 10,
           fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         }}>
-          {ICONS.plus} New
+          {ICONS.plus} Add
         </button>
-        <button onClick={() => importRef.current?.click()} title="Import a .llmchar file" style={{
-          flex: 1, background: 'var(--sl-surface)', color: 'var(--sl-text)',
-          border: '1px dashed var(--sl-border-strong)', padding: '11px', borderRadius: 10,
-          fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        }}>
-          {ICONS.download} Import
-        </button>
+
+        {addMenuOpen && (
+          <div style={{
+            position: 'absolute', left: 12, right: 12, bottom: 'calc(100% - 6px)',
+            background: '#1a1f30', border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: 10, padding: 6, zIndex: 30,
+            boxShadow: '0 -8px 24px rgba(0,0,0,0.5)',
+          }}>
+            <AddMenuItem icon={ICONS.user} label="New character" onClick={() => { setAddMenuOpen(false); onNewChar && onNewChar() }} />
+            <AddMenuItem icon={ICONS.message} label="New group chat" onClick={() => { setAddMenuOpen(false); onNewGroup && onNewGroup() }} />
+            <AddMenuItem icon={ICONS.download} label="Import character file" onClick={() => { setAddMenuOpen(false); importRef.current?.click() }} />
+          </div>
+        )}
       </div>
     </aside>
   )
 }
 
+function AddMenuItem({ icon, label, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      display: 'flex', alignItems: 'center', gap: 12, width: '100%',
+      background: 'transparent', border: 'none', color: '#e8ecf5',
+      padding: '9px 12px', borderRadius: 6, fontSize: 13,
+      cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+    }}
+      onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+      <span style={{ display: 'inline-flex', color: 'var(--sl-muted)' }}>{icon}</span>
+      <span>{label}</span>
+    </button>
+  )
+}
+
 function ChatRow({ char, active, onClick }) {
+  const isGroup = char.kind === 'group'
   return (
     <button onClick={onClick} style={{
       width: '100%', display: 'flex', gap: 12, padding: '10px 12px',
@@ -91,7 +125,9 @@ function ChatRow({ char, active, onClick }) {
       border: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer',
       borderRadius: 10, fontFamily: 'inherit',
     }}>
-      <Avatar char={char} size={42} showOnline />
+      {isGroup
+        ? <GroupAvatar participants={char.members || []} size={42} showOnline />
+        : <Avatar char={char} size={42} showOnline />}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 5 }}>

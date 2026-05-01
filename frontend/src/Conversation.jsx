@@ -1,8 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Avatar, ICONS, renderRP } from './shared.jsx'
+import { Avatar, GroupAvatar, ICONS, renderRP } from './shared.jsx'
 
-export default function Conversation({ char, userProfile, settings, onSend, onUpdateChar, onOpenProfile, isStreaming, onCancelStream, onRegenerate, onResendUser, onContinueFrom, onAttachImage, isMobile, onBack }) {
+export default function Conversation({
+  char, userProfile, settings,
+  onSend, onUpdateChar, onOpenProfile,
+  isStreaming, onCancelStream,
+  onRegenerate, onResendUser, onContinueFrom, onAttachImage,
+  // Group-only:
+  onGroupReplyAs,    // (charId) => void — voice this member next
+  onGroupAutoStart,  // () => void — start round-robin loop
+  onGroupAutoStop,   // () => void — pause loop
+  isAutoLoopActive,  // bool — whether loop is currently going
+  isMobile, onBack,
+}) {
+  const isGroup = char?.kind === 'group'
+  const groupMembers = isGroup ? (char.members || []) : []
   const userAvatarChar = {
     name: userProfile?.name || 'You',
     initial: (userProfile?.name?.[0] || '?').toUpperCase(),
@@ -148,13 +161,17 @@ export default function Conversation({ char, userProfile, settings, onSend, onUp
             <button className="sl-icon-btn" onClick={onBack} title="Back" style={{ marginLeft: -8 }}>{ICONS.back}</button>
           )}
           <button onClick={onOpenProfile} style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0, fontFamily: 'inherit', textAlign: 'left' }}>
-            <Avatar char={char} size={38} />
+            {isGroup
+              ? <GroupAvatar participants={groupMembers} size={38} />
+              : <Avatar char={char} size={38} />}
             <div>
               <div style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.2 }}>{char.name}</div>
               <div style={{ fontSize: 12, color: 'var(--sl-muted)', marginTop: 2 }}>
                 {char.typing
                   ? <span style={{ color: 'var(--sl-accent)', fontStyle: 'italic' }}>typing…</span>
-                  : <><span style={{ color: 'var(--sl-online)' }}>●</span> ready</>}
+                  : isGroup
+                    ? groupMembers.map(m => m.name).join(', ')
+                    : <><span style={{ color: 'var(--sl-online)' }}>●</span> ready</>}
               </div>
             </div>
           </button>
@@ -166,7 +183,7 @@ export default function Conversation({ char, userProfile, settings, onSend, onUp
 
       <div className="sl-scroll" ref={messagesRef} onScroll={onMessagesScroll} style={{ flex: 1, overflowY: 'auto', padding: '16px 24px 8px', display: 'flex', flexDirection: 'column' }}>
         {visibleMessages.map((m, i, arr) => (
-          <MessageRow key={m.id} msg={m} char={char} userAvatarChar={userAvatarChar} prev={arr[i - 1]}
+          <MessageRow key={m.id} msg={m} char={char} userAvatarChar={userAvatarChar} groupMembers={groupMembers} prev={arr[i - 1]}
             onOpenMenu={(info) => setMenu(info)}
             onOpenImage={(img) => setLightbox({ ...img, charName: char.name, time: m.time })}
             onImageLoaded={() => {
@@ -209,6 +226,50 @@ export default function Conversation({ char, userProfile, settings, onSend, onUp
           onMouseEnter={e => { e.currentTarget.style.borderTopColor = 'var(--sl-accent)' }}
           onMouseLeave={e => { e.currentTarget.style.borderTopColor = 'var(--sl-border)' }}
         />
+      )}
+      {isGroup && (
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: 6,
+          padding: '10px 24px 0',
+        }}>
+          {groupMembers.map(m => (
+            <button key={m.id}
+              onClick={() => onGroupReplyAs && onGroupReplyAs(m.id)}
+              disabled={isStreaming || isAutoLoopActive}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                background: 'var(--sl-surface)', border: '1px solid var(--sl-border-strong)',
+                color: 'var(--sl-text)', padding: '6px 10px 6px 6px', borderRadius: 999,
+                fontSize: 12.5, cursor: (isStreaming || isAutoLoopActive) ? 'default' : 'pointer',
+                fontFamily: 'inherit',
+                opacity: (isStreaming || isAutoLoopActive) ? 0.5 : 1,
+              }}>
+              <Avatar char={m} size={20} />
+              Reply as {m.name}
+            </button>
+          ))}
+          {isAutoLoopActive
+            ? <button onClick={onGroupAutoStop} style={{
+                background: '#c75555', border: 'none', color: 'white',
+                padding: '6px 14px', borderRadius: 999, fontSize: 12.5,
+                cursor: 'pointer', fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+                Pause
+              </button>
+            : <button onClick={onGroupAutoStart}
+                disabled={isStreaming}
+                style={{
+                  background: 'var(--sl-accent)', border: 'none', color: 'white',
+                  padding: '6px 14px', borderRadius: 999, fontSize: 12.5,
+                  cursor: isStreaming ? 'default' : 'pointer', fontFamily: 'inherit',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  opacity: isStreaming ? 0.5 : 1,
+                }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+                Auto
+              </button>}
+        </div>
       )}
       <div style={{ position: 'relative', padding: '10px 24px 16px' }}>
         {showScrollDown && (
@@ -359,7 +420,12 @@ function MessageContextMenu({ x, y, msg, char, onClose, onRegenerate, onResend, 
   )
 }
 
-function MessageRow({ msg, char, userAvatarChar, prev, onOpenMenu, onOpenImage, onImageLoaded, editing, onCancelEdit, onSaveEdit }) {
+function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu, onOpenImage, onImageLoaded, editing, onCancelEdit, onSaveEdit }) {
+  // For group chats, the assistant's avatar/name comes from msg.from (the
+  // member who voiced this turn). For individual chats, it's just `char`.
+  const speaker = (groupMembers && groupMembers.length > 0 && msg?.from)
+    ? (groupMembers.find(m => m?.id === msg.from) || char)
+    : char
   const [editText, setEditText] = useState(msg.text)
   useEffect(() => { setEditText(msg.text) }, [msg.text, editing])
 
@@ -388,10 +454,13 @@ function MessageRow({ msg, char, userAvatarChar, prev, onOpenMenu, onOpenImage, 
         justifyContent: isUser ? 'flex-end' : 'flex-start', marginTop: sameAsPrev ? 2 : 12, cursor: 'context-menu' }}>
       {!isUser && (
         <div style={{ width: 30, opacity: sameAsPrev ? 0 : 1 }}>
-          {!sameAsPrev && <Avatar char={char} size={30} />}
+          {!sameAsPrev && <Avatar char={speaker} size={30} />}
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: '70%', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
+        {!sameAsPrev && !isUser && groupMembers && groupMembers.length > 0 && speaker?.name && (
+          <div style={{ fontSize: 11.5, color: 'var(--sl-muted)', padding: '0 4px' }}>{speaker.name}</div>
+        )}
         {!sameAsPrev && isUser && userAvatarChar?.name && userAvatarChar.name !== '?' && (
           <div style={{ fontSize: 11.5, color: 'var(--sl-muted)', padding: '0 4px' }}>{userAvatarChar.name}</div>
         )}
