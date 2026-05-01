@@ -446,7 +446,13 @@ function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu,
     )
   }
   const isUser = msg.role === 'user'
-  const sameAsPrev = prev && prev.role === msg.role
+  // Two consecutive bubbles count as "from the same speaker" only when
+  // they're the same role AND, for group-chat assistant turns, the same
+  // member voiced both. Without the from-check, alternating characters
+  // looked like one long monologue with no attribution after the first.
+  const sameAsPrev = prev && prev.role === msg.role && (
+    msg.role !== 'assistant' || (prev.from || null) === (msg.from || null)
+  )
 
   return (
     <div className="sl-msg" onContextMenu={(e) => { e.preventDefault(); onOpenMenu && onOpenMenu({ x: e.clientX, y: e.clientY, msg }) }}
