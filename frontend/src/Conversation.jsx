@@ -316,9 +316,6 @@ export default function Conversation({
       <div className="sl-scroll" ref={messagesRef} onScroll={onMessagesScroll} style={{ flex: 1, overflowY: 'auto', padding: '16px 24px 8px', display: 'flex', flexDirection: 'column' }}>
         {visibleMessages.map((m, i, arr) => (
           <MessageRow key={m.id} msg={m} char={char} userAvatarChar={userAvatarChar} groupMembers={groupMembers} prev={arr[i - 1]}
-            isAudioPlaying={playingMsgId === m.id}
-            isSynthInflight={!!synthInflight[m.id]}
-            onPlayAudio={() => playingMsgId === m.id ? stopPlayback() : playMessage(m)}
             onOpenMenu={(info) => setMenu(info)}
             onOpenImage={(img) => setLightbox({ ...img, charName: char.name, time: m.time })}
             onImageLoaded={() => {
@@ -493,19 +490,36 @@ export default function Conversation({
           onEdit={() => setEditingId(menu.msg.id)}
           onDelete={() => onUpdateChar({ ...char, messages: char.messages.filter(x => x.id !== menu.msg.id) })}
           onAttachImage={() => onAttachImage && onAttachImage(menu.msg)}
+          onPlayAudio={() => playingMsgId === menu.msg.id ? stopPlayback() : playMessage(menu.msg)}
+          isAudioPlaying={playingMsgId === menu.msg.id}
+          isSynthInflight={!!synthInflight[menu.msg.id]}
         />
       )}
     </main>
   )
 }
 
-function MessageContextMenu({ x, y, msg, char, onClose, onRegenerate, onResend, onAttachImage, onContinueHere, onDelete, onEdit }) {
+function MessageContextMenu({ x, y, msg, char, onClose, onRegenerate, onResend, onAttachImage, onContinueHere, onDelete, onEdit, onPlayAudio, isAudioPlaying, isSynthInflight }) {
   const isAssistant = msg.role === 'assistant'
   const isUser = msg.role === 'user'
+  const playIcon = (
+    isSynthInflight
+      ? <span className="sl-spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
+      : isAudioPlaying
+        ? <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+        : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+  )
   const items = []
   if (isAssistant) {
     items.push({ icon: ICONS.refresh, label: 'Regenerate reply', onClick: onRegenerate })
     items.push({ icon: ICONS.spark, label: msg.image ? 'Re-generate scene image' : 'Generate scene image', onClick: onAttachImage })
+    if (msg.text && onPlayAudio) {
+      items.push({
+        icon: playIcon,
+        label: isSynthInflight ? 'Synthesising audio…' : (isAudioPlaying ? 'Stop audio' : 'Play audio'),
+        onClick: isSynthInflight ? null : onPlayAudio,
+      })
+    }
   }
   if (isUser) {
     items.push({ icon: ICONS.refresh, label: 'Resend (re-roll reply)', onClick: onResend })
@@ -555,7 +569,7 @@ function MessageContextMenu({ x, y, msg, char, onClose, onRegenerate, onResend, 
   )
 }
 
-function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu, onOpenImage, onImageLoaded, editing, onCancelEdit, onSaveEdit, onPlayAudio, isAudioPlaying, isSynthInflight }) {
+function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu, onOpenImage, onImageLoaded, editing, onCancelEdit, onSaveEdit }) {
   // For group chats, the assistant's avatar/name comes from msg.from (the
   // member who voiced this turn). For individual chats, it's just `char`.
   const speaker = (groupMembers && groupMembers.length > 0 && msg?.from)
@@ -646,32 +660,7 @@ function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu,
                 fontSize: 10.5, marginLeft: 8, float: 'right', marginTop: 6, marginBottom: -2,
                 fontVariantNumeric: 'tabular-nums',
                 color: isUser ? 'rgba(255,255,255,0.6)' : 'var(--sl-muted)',
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-              }}>
-                {!isUser && msg.text && onPlayAudio && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onPlayAudio() }}
-                    aria-label={isAudioPlaying ? 'Stop' : 'Play'}
-                    title={isAudioPlaying ? 'Stop' : (isSynthInflight ? 'Synthesising…' : 'Play')}
-                    disabled={isSynthInflight}
-                    style={{
-                      background: 'transparent', border: 'none', padding: 0,
-                      width: 16, height: 16, borderRadius: 3, cursor: isSynthInflight ? 'default' : 'pointer',
-                      color: isAudioPlaying ? 'var(--sl-accent)' : 'var(--sl-muted)',
-                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                      opacity: isSynthInflight ? 0.5 : 1,
-                    }}>
-                    {isSynthInflight ? (
-                      <span className="sl-spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />
-                    ) : isAudioPlaying ? (
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
-                    ) : (
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
-                    )}
-                  </button>
-                )}
-                <span>{msg.edited ? 'edited · ' : ''}{msg.time}</span>
-              </span>
+              }}>{msg.edited ? 'edited · ' : ''}{msg.time}</span>
             </>
           )}
         </div>
