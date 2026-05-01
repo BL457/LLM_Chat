@@ -3,16 +3,32 @@ import { createPortal } from 'react-dom'
 import { Avatar, GroupAvatar, ICONS, renderRP } from './shared.jsx'
 import { synthesizeSpeech } from './api.js'
 
-// Strip *actions* and any leftover scene markup, leaving plain spoken text
-// for the TTS engine. Asterisk-actions are mostly stage direction noise
-// the model wraps around dialogue — we don't want them voiced literally.
+// Prepare a message for TTS. We keep *actions* in the read-aloud text
+// (they're meaningful narration, not noise), but wrap them with sentence
+// boundaries so the TTS engine pauses around them and they don't blur
+// into the surrounding speech. Punctuation is the lever Kokoro responds
+// to most reliably — full stops give a meatier pause than commas, and
+// the model handles them as expected.
 function textForTTS(text) {
   if (!text) return ''
   let s = String(text)
-  // Remove *bracketed actions*
-  s = s.replace(/\*[^*]+\*/g, '')
-  // Collapse whitespace
-  s = s.replace(/\s+/g, ' ').trim()
+  // Wrap *bracketed actions* with sentence-ending punctuation. The leading
+  // period closes whatever speech preceded it; the trailing period opens
+  // a clean break before the next bit of speech.
+  s = s.replace(/\*\s*([^*]+?)\s*\*/g, (_, inner) => {
+    // Don't double up punctuation if the action already ends with .!?
+    const trimmed = inner.trim()
+    const tail = /[.!?…]$/.test(trimmed) ? '' : '.'
+    return `. ${trimmed}${tail} `
+  })
+  // Tidy whitespace and collapse runs of punctuation introduced by the
+  // wrapping ('. .' / '! .' / '? .' etc.).
+  s = s.replace(/\s+/g, ' ')
+  // If a sentence already ends with .!?…, drop the leading period we just
+  // injected — '! .' becomes '!', '. .' becomes '.', etc.
+  s = s.replace(/([.!?…])\s+\./g, '$1')
+  s = s.replace(/\s+([.,!?;:])/g, '$1')
+  s = s.trim().replace(/^[.\s,]+/, '').replace(/[\s,]+$/, '')
   return s
 }
 
@@ -136,10 +152,19 @@ export default function Conversation({
     playMessage(newest)
   }, [audioEnabled, char?.messages?.length, char?.messages?.[char?.messages?.length - 1]?.text, char?.messages?.[char?.messages?.length - 1]?.streaming])
 
-  // Stop / clear queue when we switch chats (different char id).
+  // Stop / clear queue when we switch chats. We also pre-mark the most
+  // recent existing assistant message as 'already auto-played' so that
+  // re-entering a chat doesn't trigger auto-play of the last reply
+  // you've already heard.
   useEffect(() => {
     stopPlayback()
-    lastAutoPlayedRef.current = null
+    let mostRecentId = null
+    const list = (char?.messages || []).filter(m => m.role !== 'narrator' && !m.hidden)
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i]
+      if (m.role === 'assistant' && !m.streaming && m.text) { mostRecentId = m.id; break }
+    }
+    lastAutoPlayedRef.current = mostRecentId
   }, [char?.id])
 
   // Free Blob URLs on unmount.
