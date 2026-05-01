@@ -180,6 +180,82 @@ function sceneStateToString(scene) {
   return JSON.stringify(scene, null, 2)
 }
 
+// Build the system prompt sent when a specific character is voicing a reply
+// inside a group chat. They get their own persona PLUS context about the
+// group: where it's set, who else is here, and what state every participant
+// is currently in (theirs to update, others' for awareness).
+function buildGroupSystemPrompt(speaker, group, members, groupScene, { timeAware = false } = {}) {
+  const sceneLines = []
+  sceneLines.push(`You are speaking in a group conversation called "${group.name || 'Group'}".`)
+  if (group.blurb) sceneLines.push(group.blurb)
+  if (groupScene?.location) sceneLines.push(`Shared location: ${groupScene.location}`)
+  if (groupScene?.atmosphere) sceneLines.push(`Atmosphere of the scene: ${groupScene.atmosphere}`)
+  sceneLines.push('')
+  sceneLines.push('Other participants in the room:')
+  for (const m of members) {
+    if (!m || m.id === speaker.id) continue
+    const peerScene = (groupScene?.characters || {})[m.id] || {}
+    const peerLines = []
+    if (peerScene.clothing) peerLines.push(`wearing ${peerScene.clothing}`)
+    if (peerScene.appearance) peerLines.push(peerScene.appearance)
+    if (peerScene.objects) peerLines.push(`with ${peerScene.objects}`)
+    if (peerScene.mood) peerLines.push(`mood: ${peerScene.mood}`)
+    sceneLines.push(`- ${m.name}${peerLines.length ? ' — ' + peerLines.join(', ') : ''}${m.blurb ? ' (' + m.blurb + ')' : ''}`)
+  }
+  sceneLines.push('')
+  const myScene = (groupScene?.characters || {})[speaker.id] || {}
+  sceneLines.push(`Your own current state in this scene:`)
+  sceneLines.push(`  clothing: ${myScene.clothing || '—'}`)
+  sceneLines.push(`  appearance: ${myScene.appearance || '—'}`)
+  sceneLines.push(`  objects: ${myScene.objects || '—'}`)
+  sceneLines.push(`  mood: ${myScene.mood || '—'}`)
+  sceneLines.push('')
+  sceneLines.push('In the chat history, lines that begin with [Name]: are messages spoken by other participants. Lines without a prefix are spoken by the user (the human you are roleplaying with).')
+  sceneLines.push('Reply only as yourself. Do NOT speak for, narrate the actions of, or generate dialogue for any other named participant. Stay focused on your character.')
+  sceneLines.push('When you write your [/SCENE] block, the LOCATION field updates the SHARED scene location for everyone, while CLOTHING / APPEARANCE / OBJECTS / MOOD apply ONLY to you — your own state in the scene right now.')
+
+  const sceneStateStr = sceneLines.join('\n')
+  return buildNarrativeSystemPrompt(speaker, sceneStateStr, { timeAware })
+}
+
+// Convert a group's chat history into the perspective of one specific
+// character — their own assistant turns stay 'assistant', everyone else's
+// (other characters AND the user) become 'user' messages with name prefixes
+// so the recipient can track who said what.
+function groupApiPayload(messages, speakerId, members, { prefixTimestamps = false } = {}) {
+  return messages.filter(m => m.role !== 'narrator' && !m.streaming).map(m => {
+    let role
+    let prefix = ''
+    if (m.role === 'assistant') {
+      if (m.from === speakerId) {
+        // This is one of MY past replies — keep as 'assistant', no prefix.
+        role = 'assistant'
+      } else {
+        // A peer's reply — flatten into a 'user' message with their name.
+        role = 'user'
+        const peer = members.find(x => x?.id === m.from)
+        prefix = `[${peer?.name || 'Other'}]: `
+      }
+    } else {
+      role = 'user'
+      // Hidden OOC blocks (user-context injection) keep no prefix — they're
+      // already wrapped in [OOC]...[/OOC]. Plain user lines get no prefix
+      // either — the system prompt explains "no prefix = the user".
+    }
+    let content = m.text || ''
+    if (prefixTimestamps && m.role === 'user' && !m.hidden) {
+      const ts = messageTimestamp(m)
+      if (ts) content = `[${formatLLMTimestamp(ts)}] ${content}`
+    }
+    const out = { role, content: prefix + content }
+    if (m.role === 'user' && m.image?.src) {
+      const b64 = m.image.src.replace(/^data:image\/[^;]+;base64,/, '')
+      if (b64) out.images = [b64]
+    }
+    return out
+  })
+}
+
 function viewChar(char, messages, scene) {
   const visible = (messages || []).filter(m => m.role !== 'narrator')
   const last = visible[visible.length - 1]
@@ -406,6 +482,7 @@ export default function App() {
     const assistantId = 'a' + Date.now()
     setStreamingId(assistantId)
     setStreamingCharId(charId)
+    setStreamingChatId(charId)
     abortRef.current = new AbortController()
 
     // Insert (or replace) the streaming assistant message — empty text + streaming flag
@@ -471,6 +548,7 @@ export default function App() {
 
     setStreamingId(null)
     setStreamingCharId(null)
+    setStreamingChatId(null)
     abortRef.current = null
 
     // Push a system notification if the user has the tab backgrounded.
@@ -486,6 +564,110 @@ export default function App() {
     // Image generation is on-demand only — right-click the message and pick
     // "Generate scene image" to fire it.
   }, [characters, sceneStates, settings])
+
+  // Group-mode parallel: voice character `voiceCharId` inside group `groupId`.
+  // System prompt + message-perspective conversion both differ from the
+  // individual flow, and scene updates split into shared (location) + per-
+  // character (clothing/appearance/objects/mood).
+  const runGroupAssistantTurn = useCallback(async (groupId, voiceCharId, replaceFromId = null) => {
+    const group = groups.find(g => g.id === groupId)
+    if (!group) return
+    const speaker = characters.find(c => c.id === voiceCharId)
+    if (!speaker) return
+    const members = (group.participants || []).map(pid => characters.find(c => c.id === pid)).filter(Boolean)
+    const groupScene = sceneStates[groupId] || EMPTY_GROUP_SCENE
+    const timeAware = settings.awareOfTime === 'true' || settings.awareOfTime === true
+    const sysPrompt = buildGroupSystemPrompt(speaker, group, members, groupScene, { timeAware })
+
+    const cur = chatHistory[groupId] || []
+    const builtMessages = groupApiPayload(
+      replaceFromId ? cur.slice(0, cur.findIndex(m => m.id === replaceFromId)) : cur,
+      voiceCharId,
+      members,
+      { prefixTimestamps: timeAware },
+    )
+
+    const assistantId = 'a' + Date.now()
+    setStreamingId(assistantId)
+    setStreamingCharId(voiceCharId)
+    setStreamingChatId(groupId)
+    abortRef.current = new AbortController()
+
+    setChatHistory(prev => {
+      const cur = prev[groupId] || []
+      let next
+      if (replaceFromId) {
+        const idx = cur.findIndex(m => m.id === replaceFromId)
+        next = idx >= 0 ? [...cur.slice(0, idx)] : [...cur]
+      } else {
+        next = [...cur]
+      }
+      next.push({ id: assistantId, role: 'assistant', from: voiceCharId, text: '', time: nowTime(), streaming: true })
+      return { ...prev, [groupId]: next }
+    })
+
+    let fullText = ''
+    try {
+      await streamNarrative({
+        messages: builtMessages,
+        settings: settingsToApi(settings, sysPrompt),
+        signal: abortRef.current.signal,
+        onText: (_tok, full) => { fullText = full },
+        onScene: (sceneDict) => {
+          if (!sceneDict || typeof sceneDict !== 'object') return
+          setSceneStates(prev => {
+            const cur = { ...EMPTY_GROUP_SCENE, ...(prev[groupId] || {}) }
+            cur.characters = { ...(cur.characters || {}) }
+            // LOCATION is shared (any speaker can move the group)
+            if (typeof sceneDict.location === 'string' && sceneDict.location) {
+              cur.location = sceneDict.location
+            }
+            // The other 4 fields are this speaker's own state.
+            const mine = { ...(cur.characters[voiceCharId] || EMPTY_PER_CHAR_GROUP_SCENE) }
+            for (const k of ['clothing', 'appearance', 'objects', 'mood']) {
+              if (typeof sceneDict[k] === 'string' && sceneDict[k]) mine[k] = sceneDict[k]
+            }
+            cur.characters[voiceCharId] = mine
+            const next = { ...prev, [groupId]: cur }
+            saveState('sceneState', next).catch(() => {})
+            return next
+          })
+        },
+      })
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.error('group stream failed:', e)
+        fullText = (fullText || '') + `\n[Error: ${e.message || e}]`
+      }
+    }
+
+    const cleanText = (fullText || '').trim()
+    setChatHistory(prev => {
+      const cur = prev[groupId] || []
+      const idx = cur.findIndex(m => m.id === assistantId)
+      if (idx < 0) return prev
+      const next = [...cur]
+      next[idx] = { ...next[idx], text: cleanText, streaming: false }
+      const result = { ...prev, [groupId]: next }
+      saveState('chatHistory', result).catch(() => {})
+      return result
+    })
+
+    setStreamingId(null)
+    setStreamingCharId(null)
+    setStreamingChatId(null)
+    abortRef.current = null
+
+    if (fullText && speaker) {
+      notifyIfBackgrounded({
+        title: `${speaker.name} (${group.name})`,
+        body: stripForPreview(fullText),
+        tag: `rp:${groupId}`,
+        icon: speaker.avatarUrl || undefined,
+        onClick: () => setActiveId(groupId),
+      })
+    }
+  }, [groups, characters, chatHistory, sceneStates, settings])
 
   const generateImageForMessage = useCallback(async (charId, msgId, narrative) => {
     const char = characters.find(c => c.id === charId)
@@ -564,8 +746,52 @@ export default function App() {
     }
   }, [characters, sceneStates, settings])
 
+  // Group-aware: pushes the user message into the group's history and (if
+  // a default speaker is supplied) immediately voices their reply.
+  const handleGroupSend = useCallback((groupId, text, imageDataUrl, defaultSpeakerId = null) => {
+    const group = groups.find(g => g.id === groupId)
+    if (!group) return
+    const userMsg = { id: 'u' + Date.now(), role: 'user', text, time: nowTime() }
+    if (imageDataUrl) userMsg.image = { status: 'ready', src: imageDataUrl }
+    setChatHistory(prev => {
+      const cur = prev[groupId] || []
+      const next = { ...prev, [groupId]: [...cur, userMsg] }
+      saveState('chatHistory', next).catch(() => {})
+      return next
+    })
+    if (defaultSpeakerId) {
+      // Use a microtask so the chatHistory update lands first.
+      setTimeout(() => runGroupAssistantTurn(groupId, defaultSpeakerId), 0)
+    }
+  }, [groups, runGroupAssistantTurn])
+
+  // Pick the next character to speak in a group, by default the participant
+  // who DIDN'T speak most recently. With 2 members this is just the alternation.
+  const pickNextGroupSpeaker = useCallback((group, currentMessages) => {
+    const members = (group.participants || [])
+    if (members.length === 0) return null
+    // Find last assistant message; pick the OTHER participant.
+    for (let i = currentMessages.length - 1; i >= 0; i--) {
+      const m = currentMessages[i]
+      if (m.role === 'assistant' && !m.streaming && m.from) {
+        const other = members.find(pid => pid !== m.from)
+        if (other) return other
+        break
+      }
+    }
+    // No prior assistant message — start with the first participant.
+    return members[0]
+  }, [])
+
   const handleSend = useCallback((text, imageDataUrl) => {
     if (!activeId) return
+    // If the active chat is a group, route to the group flow.
+    const group = groups.find(g => g.id === activeId)
+    if (group) {
+      const next = pickNextGroupSpeaker(group, chatHistory[activeId] || [])
+      handleGroupSend(activeId, text, imageDataUrl, next)
+      return
+    }
     const cur = chatHistory[activeId] || []
     const isFirstUserMessage = !cur.some(m => m.role === 'user' && !m.hidden)
 
@@ -601,7 +827,7 @@ export default function App() {
     setTimeout(() => {
       runAssistantTurn(activeId, apiPayload(updated, { prefixTimestamps: settings.awareOfTime === 'true' || settings.awareOfTime === true }))
     }, 0)
-  }, [activeId, chatHistory, userProfile, settings.awareOfTime, runAssistantTurn])
+  }, [activeId, chatHistory, userProfile, settings.awareOfTime, runAssistantTurn, groups, pickNextGroupSpeaker, handleGroupSend])
 
   const handleCancelStream = useCallback(() => {
     if (abortRef.current) abortRef.current.abort()
@@ -733,8 +959,70 @@ export default function App() {
 
   const handleClearHistory = useCallback((id) => {
     persistChatHistory({ ...chatHistory, [id]: [] })
-    persistSceneStates({ ...sceneStates, [id]: { ...EMPTY_SCENE } })
-  }, [chatHistory, sceneStates, persistChatHistory, persistSceneStates])
+    // Reset to whichever scene-shape is appropriate.
+    const isGroup = groups.some(g => g.id === id)
+    persistSceneStates({ ...sceneStates, [id]: isGroup ? { ...EMPTY_GROUP_SCENE } : { ...EMPTY_SCENE } })
+  }, [chatHistory, sceneStates, groups, persistChatHistory, persistSceneStates])
+
+  // ─── Group CRUD ─────────────────────────────────────────────────────────
+  const handleCreateGroup = useCallback((draft) => {
+    const g = {
+      id: 'g-' + Date.now(),
+      name: (draft.name || '').trim() || 'New group',
+      blurb: draft.blurb || '',
+      accent: draft.accent || autoAccent('grp' + Date.now()),
+      participants: Array.isArray(draft.participants) ? draft.participants.slice(0, 2) : [],
+    }
+    persistGroups([g, ...groups])
+    setActiveId(g.id)
+    setOverlay(null)
+    setMobileScreen('conv')
+  }, [groups, persistGroups])
+
+  const handleUpdateGroup = useCallback((updated) => {
+    const baseFields = ['id', 'name', 'blurb', 'accent', 'participants']
+    const stripped = {}
+    for (const k of baseFields) if (k in updated) stripped[k] = updated[k]
+    const next = groups.map(g => g.id === stripped.id ? { ...g, ...stripped } : g)
+    persistGroups(next)
+  }, [groups, persistGroups])
+
+  const handleDeleteGroup = useCallback((id) => {
+    persistGroups(groups.filter(g => g.id !== id))
+    const { [id]: _h, ...restHist } = chatHistory; persistChatHistory(restHist)
+    const { [id]: _s, ...restScene } = sceneStates; persistSceneStates(restScene)
+    if (activeId === id) {
+      const remaining = views.filter(v => v.id !== id)
+      setActiveId(remaining[0]?.id || null)
+    }
+  }, [groups, chatHistory, sceneStates, activeId, views, persistGroups, persistChatHistory, persistSceneStates])
+
+  const handleUpdateGroupScene = useCallback((groupId, scene) => {
+    persistSceneStates({ ...sceneStates, [groupId]: scene })
+  }, [sceneStates, persistSceneStates])
+
+  // Auto-loop: keep alternating speakers until paused.
+  const autoLoopRef = useRef({ active: false, groupId: null })
+  const startAutoLoop = useCallback(async (groupId) => {
+    if (autoLoopRef.current.active) return
+    autoLoopRef.current = { active: true, groupId }
+    while (autoLoopRef.current.active && autoLoopRef.current.groupId === groupId) {
+      const group = groups.find(g => g.id === groupId)
+      if (!group) break
+      const cur = chatHistory[groupId] || []
+      const speaker = pickNextGroupSpeaker(group, cur)
+      if (!speaker) break
+      await runGroupAssistantTurn(groupId, speaker)
+      // One-tick yield so React can render and handlers can interrupt.
+      await new Promise(r => setTimeout(r, 50))
+    }
+    autoLoopRef.current = { active: false, groupId: null }
+  }, [groups, chatHistory, pickNextGroupSpeaker, runGroupAssistantTurn])
+
+  const stopAutoLoop = useCallback(() => {
+    autoLoopRef.current = { active: false, groupId: null }
+    if (abortRef.current) abortRef.current.abort()
+  }, [])
 
   if (!loaded) {
     return (
