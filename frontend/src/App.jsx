@@ -12,6 +12,42 @@ import { notifyIfBackgrounded, stripForPreview } from './notifications.js'
 import { useIsMobile } from './useViewport.js'
 
 const EMPTY_SCENE = { location: '', clothing: '', appearance: '', objects: '', mood: '' }
+// Group scene state: shared (location, atmosphere) + per-character
+// individual fields (clothing, appearance, objects, mood). The speaking
+// character's [/SCENE] block updates THEIR per-char fields plus the
+// shared location.
+const EMPTY_GROUP_SCENE = { location: '', atmosphere: '', characters: {} }
+const EMPTY_PER_CHAR_GROUP_SCENE = { clothing: '', appearance: '', objects: '', mood: '' }
+
+// Build a "view-shaped" object for a group, suitable for use in the same
+// places we render character views (sidebar row, conversation header).
+function viewGroup(group, members, messages, scene) {
+  const visible = (messages || []).filter(m => m.role !== 'narrator' && !m.hidden)
+  const last = visible[visible.length - 1]
+  let lastMessage = group.blurb || ''
+  if (last) {
+    if (last.role === 'user') {
+      lastMessage = `You: ${truncate(last.text, 50)}`
+    } else if (last.role === 'assistant') {
+      const speaker = members.find(m => m?.id === last.from)
+      lastMessage = speaker ? `${speaker.name}: ${truncate(last.text, 50)}` : truncate(last.text, 60)
+    } else {
+      lastMessage = truncate(last.text, 60)
+    }
+  }
+  return {
+    ...group,
+    kind: 'group',
+    members,
+    messages: messages || [],
+    scene: scene || EMPTY_GROUP_SCENE,
+    lastTime: last?.time || '',
+    lastMessage,
+    typing: false,
+    initial: (group.name?.[0] || '?').toUpperCase(),
+    online: true,
+  }
+}
 const EMPTY_USER_PROFILE = {
   name: '', age: '', description: '', avatarUrl: null, accent: '#7b8fff',
   charactersKnowMe: false, charactersCanSeeMe: true, useNameInDialogue: true,
@@ -242,15 +278,17 @@ function settingsToApi(s, systemPrompt) {
 
 export default function App() {
   const [characters, setCharacters] = useState([])
-  const [chatHistory, setChatHistory] = useState({})  // { charId: messages[] }
-  const [sceneStates, setSceneStates] = useState({})  // { charId: scene }
+  const [groups, setGroups] = useState([])  // [{id, name, blurb, accent, participants:[charId,...]}]
+  const [chatHistory, setChatHistory] = useState({})  // { (charId|groupId): messages[] }
+  const [sceneStates, setSceneStates] = useState({})  // { (charId|groupId): scene-or-group-scene }
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [userProfile, setUserProfile] = useState(EMPTY_USER_PROFILE)
   const [savedProfiles, setSavedProfiles] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [overlay, setOverlay] = useState(null)
   const [streamingId, setStreamingId] = useState(null)  // assistant message id being streamed
-  const [streamingCharId, setStreamingCharId] = useState(null)  // which char is being replied to
+  const [streamingCharId, setStreamingCharId] = useState(null)  // which character is voicing the reply
+  const [streamingChatId, setStreamingChatId] = useState(null)  // which chat (char or group) it lands in
   const [loaded, setLoaded] = useState(false)
   const [mobileScreen, setMobileScreen] = useState('list')  // 'list' | 'conv' — only applied on mobile
   const isMobile = useIsMobile()
@@ -288,6 +326,7 @@ export default function App() {
       setSettings(sett)
       setUserProfile({ ...EMPTY_USER_PROFILE, ...(s.userProfile || {}) })
       setSavedProfiles(Array.isArray(s.savedProfiles) ? s.savedProfiles : [])
+      setGroups(Array.isArray(s.groups) ? s.groups : [])
       setActiveId(sett.activeCharacterId || chars[0]?.id || null)
       setLoaded(true)
     }).catch(err => {
@@ -331,16 +370,29 @@ export default function App() {
     setSavedProfiles(next)
     saveState('savedProfiles', next).catch(() => {})
   }, [])
+  const persistGroups = useCallback((next) => {
+    setGroups(next)
+    saveState('groups', next).catch(() => {})
+  }, [])
 
-  // Build the view shape per character. A character is shown as "typing" when
-  // an assistant message is currently streaming for THAT specific character —
-  // regardless of which chat is currently selected in the sidebar.
-  // Sorted by most recent activity first (newest message at the top), with
-  // empty conversations falling to the bottom.
-  const views = characters.map(c => ({
+  // Build view shapes for both individual characters and groups, mixed.
+  // - "typing" propagates to the active group when the streaming character
+  //    is one of its members
+  // - sorted by most recent activity, regardless of kind
+  const charViews = characters.map(c => ({
     ...viewChar(c, chatHistory[c.id], sceneStates[c.id]),
-    typing: streamingCharId === c.id,
-  })).sort((a, b) => lastActivityTs(b.messages) - lastActivityTs(a.messages))
+    kind: 'char',
+    typing: streamingCharId === c.id && (!streamingChatId || streamingChatId === c.id),
+  }))
+  const groupViews = groups.map(g => {
+    const members = (g.participants || []).map(pid => characters.find(c => c.id === pid)).filter(Boolean)
+    return {
+      ...viewGroup(g, members, chatHistory[g.id], sceneStates[g.id]),
+      typing: streamingChatId === g.id && streamingCharId != null,
+    }
+  })
+  const views = [...charViews, ...groupViews]
+    .sort((a, b) => lastActivityTs(b.messages) - lastActivityTs(a.messages))
   const active = views.find(v => v.id === activeId)
 
   // ─── Send / regenerate / streaming ─────────────────────────────────────

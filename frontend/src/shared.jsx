@@ -143,6 +143,37 @@ export function nowTime() {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+// Two overlapping circles, used for group chat avatars. Takes the same
+// `size` as <Avatar> and renders the first two participants' avatars at
+// 70% size, offset diagonally — Telegram-style.
+export function GroupAvatar({ participants = [], size = 38, showOnline = false }) {
+  const inner = Math.round(size * 0.7)
+  const offset = size - inner
+  const a = participants[0]
+  const b = participants[1]
+  return (
+    <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
+      {a && (
+        <div style={{ position: 'absolute', left: 0, top: 0 }}>
+          <Avatar char={a} size={inner} />
+        </div>
+      )}
+      {b && (
+        <div style={{ position: 'absolute', left: offset, top: offset, boxShadow: '0 0 0 2px #0c1020', borderRadius: '50%' }}>
+          <Avatar char={b} size={inner} />
+        </div>
+      )}
+      {showOnline && (
+        <span style={{
+          position: 'absolute', bottom: -1, right: -1,
+          width: Math.max(9, size * 0.26), height: Math.max(9, size * 0.26),
+          background: 'var(--sl-online)', border: '2px solid #0c1020', borderRadius: '50%',
+        }} />
+      )}
+    </div>
+  )
+}
+
 // Auto-pick a stable accent color from a string id.
 const ACCENT_PALETTE = ['#7b8fff', '#43d98e', '#d97a4a', '#e07ba1', '#7cc4d9', '#c4a87b', '#b07be0']
 export function autoAccent(id) {

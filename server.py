@@ -30,6 +30,7 @@ DATA_FILES = {
     "chatHistory": DATA_DIR / "chat_history.json",
     "userProfile": DATA_DIR / "user_profile.json",
     "savedProfiles": DATA_DIR / "saved_profiles.json",
+    "groups": DATA_DIR / "groups.json",
 }
 
 
@@ -399,6 +400,7 @@ async def get_all_state():
         "chatHistory": read_data("chatHistory"),
         "userProfile": read_data("userProfile"),
         "savedProfiles": read_data("savedProfiles"),
+        "groups": read_data("groups"),
     }
 
 
