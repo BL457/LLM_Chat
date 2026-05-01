@@ -65,6 +65,7 @@ export default function Conversation({
   const audioQueueRef = useRef([])           // pending {msgId, url}
   const currentAudioRef = useRef(null)       // currently playing HTMLAudioElement
   const lastAutoPlayedRef = useRef(null)     // most recent msg id auto-play has handled
+  const synthInflightRef = useRef(new Set()) // sync guard against concurrent synth calls for same msg
 
   const audioEnabled = settings?.audioEnabled === 'true' || settings?.audioEnabled === true
   const ttsProvider = settings?.ttsProvider || 'kokoro-local'
@@ -105,10 +106,23 @@ export default function Conversation({
   // Synthesize a message's TTS audio (or hit the cache) and queue it for
   // sequential playback. Speaker is looked up by msg.from for groups, or
   // falls back to the active character.
+  //
+  // Has three sync de-dup gates so the same message can never play twice:
+  //   1. Already in queue → skip.
+  //   2. Currently playing → skip.
+  //   3. Synthesis in flight → skip.
+  // The synthInflightRef ref is the synchronous one (state would race
+  // because setState is async).
   const playMessage = async (msg) => {
     if (!msg || msg.role !== 'assistant') return
     const text = textForTTS(msg.text)
     if (!text) return
+    // De-dup: don't re-queue something already pending or playing.
+    if (audioQueueRef.current.some(q => q.msgId === msg.id)) return
+    if (currentAudioRef.current && playingMsgId === msg.id) return
+    // De-dup: don't kick off a second synth while one's already in flight.
+    if (synthInflightRef.current.has(msg.id)) return
+
     const speaker = (groupMembers && groupMembers.length > 0 && msg.from)
       ? (groupMembers.find(m => m?.id === msg.from) || char)
       : char
@@ -122,7 +136,7 @@ export default function Conversation({
       enqueueAndPlay(msg.id, cached)
       return
     }
-    if (synthInflight[msg.id]) return
+    synthInflightRef.current.add(msg.id)
     setSynthInflight(s => ({ ...s, [msg.id]: true }))
     try {
       const url = await synthesizeSpeech({ provider: ttsProvider, voice, text })
@@ -131,6 +145,7 @@ export default function Conversation({
     } catch (e) {
       console.warn('TTS synth failed:', e)
     } finally {
+      synthInflightRef.current.delete(msg.id)
       setSynthInflight(s => { const n = { ...s }; delete n[msg.id]; return n })
     }
   }
