@@ -1,6 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Avatar, GroupAvatar, ICONS, renderRP } from './shared.jsx'
+import { synthesizeSpeech } from './api.js'
+
+// Strip *actions* and any leftover scene markup, leaving plain spoken text
+// for the TTS engine. Asterisk-actions are mostly stage direction noise
+// the model wraps around dialogue — we don't want them voiced literally.
+function textForTTS(text) {
+  if (!text) return ''
+  let s = String(text)
+  // Remove *bracketed actions*
+  s = s.replace(/\*[^*]+\*/g, '')
+  // Collapse whitespace
+  s = s.replace(/\s+/g, ' ').trim()
+  return s
+}
 
 export default function Conversation({
   char, userProfile, settings,
@@ -25,9 +39,115 @@ export default function Conversation({
   const [pendingImage, setPendingImage] = useState(null)  // data URL of attached image
   const [showScrollDown, setShowScrollDown] = useState(false)
   const [composerHeight, setComposerHeight] = useState(44)  // textarea pixel height
+  const [playingMsgId, setPlayingMsgId] = useState(null)
+  const [synthInflight, setSynthInflight] = useState({})  // msgId -> true while synthesising
   const fileRef = useRef(null)
   const textareaRef = useRef(null)
   const wasNearBottomRef = useRef(true)  // remember scroll state across renders
+  // Audio queue state — stored in refs so updates don't cause renders mid-playback.
+  const audioCacheRef = useRef({})           // msgId -> blob URL (cached after first synth)
+  const audioQueueRef = useRef([])           // pending {msgId, url}
+  const currentAudioRef = useRef(null)       // currently playing HTMLAudioElement
+  const lastAutoPlayedRef = useRef(null)     // most recent msg id auto-play has handled
+
+  const audioEnabled = settings?.audioEnabled === 'true' || settings?.audioEnabled === true
+  const ttsProvider = settings?.ttsProvider || 'kokoro-local'
+
+  const stopPlayback = () => {
+    if (currentAudioRef.current) {
+      try { currentAudioRef.current.pause() } catch {}
+      currentAudioRef.current = null
+    }
+    audioQueueRef.current = []
+    setPlayingMsgId(null)
+  }
+
+  const playNextInQueue = () => {
+    if (currentAudioRef.current) return
+    const next = audioQueueRef.current.shift()
+    if (!next) {
+      setPlayingMsgId(null)
+      return
+    }
+    const audio = new Audio(next.url)
+    currentAudioRef.current = audio
+    setPlayingMsgId(next.msgId)
+    const onDone = () => {
+      currentAudioRef.current = null
+      playNextInQueue()
+    }
+    audio.onended = onDone
+    audio.onerror = onDone
+    audio.play().catch(() => onDone())
+  }
+
+  const enqueueAndPlay = (msgId, url) => {
+    audioQueueRef.current.push({ msgId, url })
+    playNextInQueue()
+  }
+
+  // Synthesize a message's TTS audio (or hit the cache) and queue it for
+  // sequential playback. Speaker is looked up by msg.from for groups, or
+  // falls back to the active character.
+  const playMessage = async (msg) => {
+    if (!msg || msg.role !== 'assistant') return
+    const text = textForTTS(msg.text)
+    if (!text) return
+    const speaker = (groupMembers && groupMembers.length > 0 && msg.from)
+      ? (groupMembers.find(m => m?.id === msg.from) || char)
+      : char
+    const voice = speaker?.voice
+    if (!voice) {
+      console.warn('No voice configured for speaker; aborting playback')
+      return
+    }
+    const cached = audioCacheRef.current[msg.id]
+    if (cached) {
+      enqueueAndPlay(msg.id, cached)
+      return
+    }
+    if (synthInflight[msg.id]) return
+    setSynthInflight(s => ({ ...s, [msg.id]: true }))
+    try {
+      const url = await synthesizeSpeech({ provider: ttsProvider, voice, text })
+      audioCacheRef.current[msg.id] = url
+      enqueueAndPlay(msg.id, url)
+    } catch (e) {
+      console.warn('TTS synth failed:', e)
+    } finally {
+      setSynthInflight(s => { const n = { ...s }; delete n[msg.id]; return n })
+    }
+  }
+
+  // Auto-play: when a NEW assistant message finalises and the toggle is on,
+  // queue it up. Tracks the last msg-id we've already handled so we don't
+  // re-fire on unrelated re-renders.
+  useEffect(() => {
+    if (!audioEnabled || !char) return
+    const list = (char.messages || []).filter(m => m.role !== 'narrator' && !m.hidden)
+    let newest = null
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i]
+      if (m.role === 'assistant' && !m.streaming && m.text) { newest = m; break }
+    }
+    if (!newest) return
+    if (lastAutoPlayedRef.current === newest.id) return
+    lastAutoPlayedRef.current = newest.id
+    playMessage(newest)
+  }, [audioEnabled, char?.messages?.length, char?.messages?.[char?.messages?.length - 1]?.text, char?.messages?.[char?.messages?.length - 1]?.streaming])
+
+  // Stop / clear queue when we switch chats (different char id).
+  useEffect(() => {
+    stopPlayback()
+    lastAutoPlayedRef.current = null
+  }, [char?.id])
+
+  // Free Blob URLs on unmount.
+  useEffect(() => () => {
+    stopPlayback()
+    Object.values(audioCacheRef.current).forEach(url => { try { URL.revokeObjectURL(url) } catch {} })
+    audioCacheRef.current = {}
+  }, [])
 
   // Drag the divider above the composer to resize the textarea. Desktop only.
   const onDividerDragStart = (e) => {
@@ -196,6 +316,9 @@ export default function Conversation({
       <div className="sl-scroll" ref={messagesRef} onScroll={onMessagesScroll} style={{ flex: 1, overflowY: 'auto', padding: '16px 24px 8px', display: 'flex', flexDirection: 'column' }}>
         {visibleMessages.map((m, i, arr) => (
           <MessageRow key={m.id} msg={m} char={char} userAvatarChar={userAvatarChar} groupMembers={groupMembers} prev={arr[i - 1]}
+            isAudioPlaying={playingMsgId === m.id}
+            isSynthInflight={!!synthInflight[m.id]}
+            onPlayAudio={() => playingMsgId === m.id ? stopPlayback() : playMessage(m)}
             onOpenMenu={(info) => setMenu(info)}
             onOpenImage={(img) => setLightbox({ ...img, charName: char.name, time: m.time })}
             onImageLoaded={() => {
@@ -432,7 +555,7 @@ function MessageContextMenu({ x, y, msg, char, onClose, onRegenerate, onResend, 
   )
 }
 
-function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu, onOpenImage, onImageLoaded, editing, onCancelEdit, onSaveEdit }) {
+function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu, onOpenImage, onImageLoaded, editing, onCancelEdit, onSaveEdit, onPlayAudio, isAudioPlaying, isSynthInflight }) {
   // For group chats, the assistant's avatar/name comes from msg.from (the
   // member who voiced this turn). For individual chats, it's just `char`.
   const speaker = (groupMembers && groupMembers.length > 0 && msg?.from)
@@ -523,7 +646,32 @@ function MessageRow({ msg, char, userAvatarChar, groupMembers, prev, onOpenMenu,
                 fontSize: 10.5, marginLeft: 8, float: 'right', marginTop: 6, marginBottom: -2,
                 fontVariantNumeric: 'tabular-nums',
                 color: isUser ? 'rgba(255,255,255,0.6)' : 'var(--sl-muted)',
-              }}>{msg.edited ? 'edited · ' : ''}{msg.time}</span>
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                {!isUser && msg.text && onPlayAudio && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onPlayAudio() }}
+                    aria-label={isAudioPlaying ? 'Stop' : 'Play'}
+                    title={isAudioPlaying ? 'Stop' : (isSynthInflight ? 'Synthesising…' : 'Play')}
+                    disabled={isSynthInflight}
+                    style={{
+                      background: 'transparent', border: 'none', padding: 0,
+                      width: 16, height: 16, borderRadius: 3, cursor: isSynthInflight ? 'default' : 'pointer',
+                      color: isAudioPlaying ? 'var(--sl-accent)' : 'var(--sl-muted)',
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      opacity: isSynthInflight ? 0.5 : 1,
+                    }}>
+                    {isSynthInflight ? (
+                      <span className="sl-spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />
+                    ) : isAudioPlaying ? (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+                    ) : (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+                    )}
+                  </button>
+                )}
+                <span>{msg.edited ? 'edited · ' : ''}{msg.time}</span>
+              </span>
             </>
           )}
         </div>

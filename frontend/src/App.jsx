@@ -94,6 +94,8 @@ const DEFAULT_SETTINGS = {
   think: 'false',
   awareOfTime: 'false',
   imgEnabled: 'true',
+  audioEnabled: 'false',
+  ttsProvider: 'kokoro-local',
   density: 'cozy',
   retryPrompt: 'please repeat that response in the correct format',
   generalTags: '',
@@ -922,7 +924,7 @@ export default function App() {
   // ─── Character CRUD ─────────────────────────────────────────────────────
   const handleUpdateChar = useCallback((updatedView) => {
     // Strip the derived/runtime fields before persisting
-    const baseFields = ['id', 'name', 'systemPrompt', 'imageTags', 'blurb', 'accent', 'avatarUrl', 'pinned']
+    const baseFields = ['id', 'name', 'systemPrompt', 'imageTags', 'blurb', 'accent', 'avatarUrl', 'pinned', 'voice']
     const stripped = {}
     for (const k of baseFields) if (k in updatedView) stripped[k] = updatedView[k]
     const next = characters.map(c => c.id === stripped.id ? { ...c, ...stripped } : c)
@@ -944,6 +946,7 @@ export default function App() {
       blurb: newChar.blurb || '',
       accent: newChar.accent,
       avatarUrl: newChar.avatarUrl || null,
+      voice: newChar.voice || '',
     }
     const next = [c, ...characters]
     persistCharacters(next)
@@ -962,6 +965,7 @@ export default function App() {
       systemPrompt: char.systemPrompt || '',
       imageTags: char.imageTags || '',
       avatarUrl: char.avatarUrl || null,
+      voice: char.voice || '',
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -988,6 +992,7 @@ export default function App() {
         blurb: typeof data.blurb === 'string' ? data.blurb : '',
         accent: typeof data.accent === 'string' && data.accent ? data.accent : autoAccent('imp' + Date.now()),
         avatarUrl: typeof data.avatarUrl === 'string' && data.avatarUrl.startsWith('data:') ? data.avatarUrl : null,
+        voice: typeof data.voice === 'string' ? data.voice : '',
       })
     } catch (e) {
       alert(`Couldn't import character — ${e.message || e}`)

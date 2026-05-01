@@ -1,3 +1,11 @@
 fastapi
 uvicorn
 httpx
+
+# Text-to-speech (Kokoro-82M via ONNX, runs locally inside the FastAPI
+# process). kokoro-onnx is preferred over the upstream kokoro package
+# because the latter pulls in blis/torch which has no wheels for
+# Python 3.13 and tries to build from source on Windows.
+kokoro-onnx
+soundfile
+numpy

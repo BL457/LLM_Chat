@@ -15,6 +15,7 @@ Runs entirely on your own machine. No cloud calls, no telemetry. The only data t
 - Image attachments — paperclip a picture into a user message, sent as multimodal input to Ollama (works with vision-capable models)
 - Native browser notifications when a reply lands and the tab isn't focused
 - Draggable composer divider (desktop), single-screen layout with back-button navigation (mobile)
+- **Local text-to-speech** via Kokoro-82M — every character can have a distinct voice (54 to choose from across English / European / Asian variants), played from a per-bubble button or auto-played as replies arrive. No cloud, runs in-process.
 
 ---
 
@@ -26,6 +27,7 @@ Runs entirely on your own machine. No cloud calls, no telemetry. The only data t
 | **Node.js** | Frontend (Vite + React) build | 18 or newer |
 | **An LLM backend** | Generates the chat replies. **Pick one**: [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggerganov/llama.cpp), [OpenRouter](https://openrouter.ai/), or any OpenAI-compatible endpoint (vLLM, LM Studio, text-generation-webui's OpenAI extension, etc.) | — |
 | **Stable Diffusion Forge** *(optional)* | Scene image generation. Skip if you don't want images. | Latest stable, run with `--api` |
+| **Kokoro-82M ONNX** *(optional, bundled)* | Local text-to-speech. Installs into the venv via `pip` and runs in-process — no extra service to start. Model files (~330 MB) download lazily on first use. | `kokoro-onnx>=0.5` (in requirements.txt) |
 
 The bundled `run.bat` checks Python and Node and sets up the venv + npm install + frontend build automatically. The LLM backend and Forge you install / sign up for separately (see below). Both endpoints are configured in **Settings → Connection** at runtime — nothing is hardcoded.
 
@@ -264,6 +266,16 @@ gemma4-rp/
 ```
 
 ---
+
+## Text-to-speech
+
+Kokoro-82M runs inside the FastAPI process via `kokoro-onnx`. The first time you call any TTS endpoint (or open a Character profile), the model files (~330 MB total: a 310 MB ONNX checkpoint + a 26 MB voice bank) download into `~/.cache/kokoro_onnx/` and are reused thereafter. Subsequent synthesis is fast — typically 1–3 seconds per sentence on CPU.
+
+**Per-character voice**: open a character's profile, scroll to the **Voice** section, and pick from the dropdown. Hit **Preview** to hear them say a sample line before you commit. New characters default to the first voice in the list. The voice catalogue includes American (`af_*`, `am_*`), British (`bf_*`, `bm_*`), and a wider set of European, Hindi, Italian, Japanese, Polish, Brazilian Portuguese, and Mandarin Chinese voices.
+
+**Auto-play**: in **Settings → Behavior**, toggle **"Speak assistant messages aloud"**. When on, every new assistant reply is synthesised and played in sequence. When off, you can still play any individual message manually using the small ▶ button next to its timestamp.
+
+**Swapping engines later**: TTS is abstracted behind a `TTSEngine` interface in `tts_engine.py`. To plug in a different engine (a remote TTS service, ElevenLabs API, a different local model), implement the interface and register the class in `ENGINES`. The frontend dropdown for `Settings → Voice` will pick it up automatically — no JS changes needed.
 
 ## Notes
 

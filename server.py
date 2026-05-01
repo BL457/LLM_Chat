@@ -8,8 +8,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+import tts_engine
 
 # Windows registry sometimes maps .js to text/plain, which breaks
 # ES module loading in modern browsers. Force the correct types.
@@ -858,6 +860,48 @@ async def llm_models(provider: str = "ollama", endpoint: str = "", api_key: str 
 @app.get("/api/ollama-models")
 async def ollama_models_alias():
     return await llm_models(provider="ollama", endpoint=DEFAULT_OLLAMA_URL)
+
+
+# ── Text-to-speech ────────────────────────────────────────────────────────
+
+@app.get("/api/tts/providers")
+async def tts_providers():
+    """List engine implementations the user can choose between in Settings."""
+    return tts_engine.list_providers()
+
+
+@app.get("/api/tts/voices")
+async def tts_voices(provider: str = "kokoro-local"):
+    """Return the voice catalogue offered by the chosen engine."""
+    try:
+        engine = tts_engine.get_engine(provider)
+        return await engine.list_voices()
+    except Exception as e:
+        print(f"  {RED}X TTS voice list failed: {e}{RESET}")
+        return []
+
+
+@app.post("/api/tts/synthesize")
+async def tts_synthesize(request: Request):
+    """POST {provider, voice, text} → audio/wav bytes."""
+    body = await request.json()
+    provider = body.get("provider") or "kokoro-local"
+    voice = body.get("voice") or ""
+    text = (body.get("text") or "").strip()
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "text is required"})
+
+    log_req("POST", "/api/tts/synthesize", f"provider={provider} voice={voice} chars={len(text)}")
+    t0 = time.time()
+    try:
+        engine = tts_engine.get_engine(provider)
+        audio = await engine.synthesize(text, voice)
+        elapsed = (time.time() - t0) * 1000
+        log_res("/api/tts/synthesize", 200, f"bytes={len(audio)}", elapsed)
+        return Response(content=audio, media_type="audio/wav")
+    except Exception as e:
+        print(f"  {RED}X TTS synth failed: {e}{RESET}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/api/test-llm")

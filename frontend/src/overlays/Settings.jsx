@@ -138,6 +138,7 @@ export default function Settings({ settings, onUpdate, onClose }) {
         <Group title="Behavior">
           <Toggle label="Show thinking" sub="Stream the model's chain-of-thought (if the model supports it)." value={draft.think === 'true' || draft.think === true} onChange={v => set('think', v ? 'true' : 'false')} />
           <Toggle label="Characters are aware of the actual time of day" sub="Prepends each user message with its timestamp so the character knows roughly when you wrote it. Useful for natural greetings (good morning / late night) and for the model to feel time pass between exchanges." value={draft.awareOfTime === 'true' || draft.awareOfTime === true} onChange={v => set('awareOfTime', v ? 'true' : 'false')} />
+          <Toggle label="Speak assistant messages aloud" sub="Plays each new reply through the local text-to-speech engine using the voice set in that character's profile. A play button on every message bubble works regardless of this toggle." value={draft.audioEnabled === 'true' || draft.audioEnabled === true} onChange={v => set('audioEnabled', v ? 'true' : 'false')} />
         </Group>
 
         <Group title="Notifications">

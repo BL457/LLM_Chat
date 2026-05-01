@@ -170,3 +170,38 @@ export async function setSdModel(name, endpoint = 'http://localhost:7860') {
     body: JSON.stringify({ model: name, sd_endpoint: endpoint }),
   })
 }
+
+// ── Text-to-speech ───────────────────────────────────────────────────────
+
+export async function listTtsProviders() {
+  try {
+    const r = await fetch('/api/tts/providers')
+    if (!r.ok) return []
+    return r.json()
+  } catch { return [] }
+}
+
+export async function listTtsVoices(provider = 'kokoro-local') {
+  try {
+    const r = await fetch(`/api/tts/voices?provider=${encodeURIComponent(provider)}`)
+    if (!r.ok) return []
+    return r.json()
+  } catch { return [] }
+}
+
+// Returns a Blob URL the browser can play directly. Caller is responsible
+// for revoking it when no longer needed.
+export async function synthesizeSpeech({ provider = 'kokoro-local', voice, text }) {
+  const r = await fetch('/api/tts/synthesize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, voice, text }),
+  })
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`
+    try { const j = await r.json(); if (j?.error) msg = j.error } catch {}
+    throw new Error(msg)
+  }
+  const blob = await r.blob()
+  return URL.createObjectURL(blob)
+}

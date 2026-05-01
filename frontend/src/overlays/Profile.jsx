@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import Overlay, { ConfirmDialog } from './Overlay.jsx'
 import { Avatar, ICONS } from '../shared.jsx'
+import { listTtsVoices, synthesizeSpeech } from '../api.js'
 
 const EMPTY_SCENE = { location: '', clothing: '', appearance: '', objects: '', mood: '' }
 
@@ -10,7 +11,51 @@ export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene,
   const [draftScene, setDraftScene] = useState({ ...EMPTY_SCENE, ...(scene || {}) })
   const [confirm, setConfirm] = useState(null)
   const [personaOpen, setPersonaOpen] = useState(false)
+  const [voices, setVoices] = useState([])
+  const [previewing, setPreviewing] = useState(false)
   const fileRef = useRef(null)
+  const previewAudioRef = useRef(null)
+
+  // Lazy-fetch the voice catalogue once the profile opens. Default the
+  // character's voice to the first available if it isn't already set.
+  useEffect(() => {
+    let alive = true
+    listTtsVoices().then(v => {
+      if (!alive) return
+      const list = Array.isArray(v) ? v : []
+      setVoices(list)
+      // If the loaded character has no voice set yet and we have a list,
+      // fill the draft with the first voice — only when not actively
+      // editing, so we don't clobber the user's choice mid-edit.
+      if (list.length > 0 && !char.voice && !editing) {
+        setDraft(d => ({ ...d, voice: list[0] }))
+      }
+    })
+    return () => { alive = false }
+  }, [char.id])
+
+  const playPreview = async () => {
+    const v = (editing ? draft.voice : char.voice) || voices[0]
+    if (!v) return
+    try {
+      setPreviewing(true)
+      const url = await synthesizeSpeech({
+        provider: 'kokoro-local',
+        voice: v,
+        text: `Hello, I'm ${char.name || 'a character'}. This is what I sound like.`,
+      })
+      const audio = new Audio(url)
+      previewAudioRef.current = audio
+      audio.onended = () => { setPreviewing(false); URL.revokeObjectURL(url) }
+      audio.onerror = () => { setPreviewing(false); URL.revokeObjectURL(url) }
+      await audio.play()
+    } catch (e) {
+      console.warn('preview failed:', e)
+      setPreviewing(false)
+    }
+  }
+  // Cancel any in-flight preview when the overlay closes / char changes.
+  useEffect(() => () => { if (previewAudioRef.current) previewAudioRef.current.pause() }, [char.id])
 
   useEffect(() => {
     setDraft(char)
@@ -149,6 +194,38 @@ export default function Profile({ char, scene, onClose, onUpdate, onUpdateScene,
               </div>
             </>
           )}
+        </Section>
+
+        <Section>
+          <div style={{ padding: '12px 20px' }}>
+            <div className="sl-label" style={{ marginBottom: 8 }}>Voice (text-to-speech)</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {editing ? (
+                <select
+                  className="sl-input"
+                  value={draft.voice || (voices[0] || '')}
+                  onChange={e => setDraft({ ...draft, voice: e.target.value })}
+                  style={{ flex: 1 }}
+                >
+                  {voices.length === 0 && <option value="">(loading voices…)</option>}
+                  {voices.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              ) : (
+                <div style={{ flex: 1, fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>
+                  {char.voice || (voices[0] || '—')}
+                </div>
+              )}
+              <button
+                className="sl-btn-ghost"
+                onClick={playPreview}
+                disabled={previewing || (voices.length === 0)}
+                style={{ flexShrink: 0 }}
+              >{previewing ? 'Playing…' : 'Preview'}</button>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--sl-muted)', marginTop: 6, lineHeight: 1.4 }}>
+              Used when "Speak assistant messages aloud" is on, or when you click the play button on a message bubble.
+            </div>
+          </div>
         </Section>
 
         <Section>
