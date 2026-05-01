@@ -513,6 +513,7 @@ export default function App() {
     })
 
     let fullText = ''
+    let aborted = false
     try {
       await streamNarrative({
         messages: builtMessages,
@@ -534,24 +535,30 @@ export default function App() {
         },
       })
     } catch (e) {
-      if (e.name !== 'AbortError') {
+      if (e.name === 'AbortError') {
+        aborted = true
+      } else {
         console.error('stream failed:', e)
         fullText = (fullText || '') + `\n[Error: ${e.message || e}]`
       }
     }
 
-    // Finalise the message — trim any stray leading/trailing whitespace
-    // (server already strips the leading run, this is belt-and-braces and
-    // also catches trailing newlines).
+    // Finalise — or, on user-cancel, remove the partial bubble entirely so
+    // it doesn't leave a half-message in the feed.
     const cleanText = (fullText || '').trim()
     let finalMsg
     setChatHistory(prev => {
       const cur = prev[charId] || []
       const idx = cur.findIndex(m => m.id === assistantId)
       if (idx < 0) return prev
-      const next = [...cur]
-      next[idx] = { ...next[idx], text: cleanText, streaming: false }
-      finalMsg = next[idx]
+      let next
+      if (aborted) {
+        next = [...cur.slice(0, idx), ...cur.slice(idx + 1)]
+      } else {
+        next = [...cur]
+        next[idx] = { ...next[idx], text: cleanText, streaming: false }
+        finalMsg = next[idx]
+      }
       const result = { ...prev, [charId]: next }
       saveState('chatHistory', result).catch(() => {})
       return result
@@ -562,8 +569,9 @@ export default function App() {
     setStreamingChatId(null)
     abortRef.current = null
 
-    // Push a system notification if the user has the tab backgrounded.
-    if (fullText && char) {
+    // Push a system notification if the user has the tab backgrounded —
+    // suppressed when the turn was cancelled (no useful content arrived).
+    if (!aborted && fullText && char) {
       notifyIfBackgrounded({
         title: char.name,
         body: stripForPreview(fullText),
@@ -621,6 +629,7 @@ export default function App() {
     })
 
     let fullText = ''
+    let aborted = false
     try {
       await streamNarrative({
         messages: builtMessages,
@@ -649,7 +658,9 @@ export default function App() {
         },
       })
     } catch (e) {
-      if (e.name !== 'AbortError') {
+      if (e.name === 'AbortError') {
+        aborted = true
+      } else {
         console.error('group stream failed:', e)
         fullText = (fullText || '') + `\n[Error: ${e.message || e}]`
       }
@@ -660,8 +671,15 @@ export default function App() {
       const cur = prev[groupId] || []
       const idx = cur.findIndex(m => m.id === assistantId)
       if (idx < 0) return prev
-      const next = [...cur]
-      next[idx] = { ...next[idx], text: cleanText, streaming: false }
+      let next
+      if (aborted) {
+        // Drop the partial bubble entirely on user-cancel — leaves a clean
+        // history with no half-finished thoughts.
+        next = [...cur.slice(0, idx), ...cur.slice(idx + 1)]
+      } else {
+        next = [...cur]
+        next[idx] = { ...next[idx], text: cleanText, streaming: false }
+      }
       const result = { ...prev, [groupId]: next }
       saveState('chatHistory', result).catch(() => {})
       return result
@@ -672,7 +690,7 @@ export default function App() {
     setStreamingChatId(null)
     abortRef.current = null
 
-    if (fullText && speaker) {
+    if (!aborted && fullText && speaker) {
       notifyIfBackgrounded({
         title: `${speaker.name} (${group.name})`,
         body: stripForPreview(fullText),
