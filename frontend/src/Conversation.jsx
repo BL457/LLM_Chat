@@ -64,8 +64,13 @@ export default function Conversation({
   const audioCacheRef = useRef({})           // msgId -> blob URL (cached after first synth)
   const audioQueueRef = useRef([])           // pending {msgId, url}
   const currentAudioRef = useRef(null)       // currently playing HTMLAudioElement
-  const lastAutoPlayedRef = useRef(null)     // most recent msg id auto-play has handled
   const synthInflightRef = useRef(new Set()) // sync guard against concurrent synth calls for same msg
+  // Auto-play tracking: which msg ids have we already considered "populated".
+  // The first time we see a chat, we mark every existing finalised assistant
+  // message as already-seen so history isn't read aloud on entry. After
+  // that, any new id that finalises is a fresh arrival → play it.
+  const seenFinalizedRef = useRef(new Set())
+  const seenForChatRef = useRef(null)        // which char.id seenFinalizedRef was primed for
 
   const audioEnabled = settings?.audioEnabled === 'true' || settings?.audioEnabled === true
   const ttsProvider = settings?.ttsProvider || 'kokoro-local'
@@ -150,37 +155,43 @@ export default function Conversation({
     }
   }
 
-  // Auto-play: when a NEW assistant message finalises and the toggle is on,
-  // queue it up. Tracks the last msg-id we've already handled so we don't
-  // re-fire on unrelated re-renders.
+  // Auto-play: trigger TTS when a message FRESHLY POPULATES the chat feed.
+  //
+  // We track msg ids we've already 'seen as finalised' in a ref. On first
+  // entry to a chat, we prime that ref with every existing finalised
+  // assistant message so history isn't read out. After that, any
+  // not-yet-seen finalised assistant id is a brand-new arrival → play it.
+  // This sidesteps the timing race the older 'last played' approach had:
+  // the seen-set is updated synchronously the moment a message appears,
+  // before any synth call can complete and circle back.
   useEffect(() => {
-    if (!audioEnabled || !char) return
+    if (!char) return
     const list = (char.messages || []).filter(m => m.role !== 'narrator' && !m.hidden)
-    let newest = null
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i]
-      if (m.role === 'assistant' && !m.streaming && m.text) { newest = m; break }
-    }
-    if (!newest) return
-    if (lastAutoPlayedRef.current === newest.id) return
-    lastAutoPlayedRef.current = newest.id
-    playMessage(newest)
-  }, [audioEnabled, char?.messages?.length, char?.messages?.[char?.messages?.length - 1]?.text, char?.messages?.[char?.messages?.length - 1]?.streaming])
 
-  // Stop / clear queue when we switch chats. We also pre-mark the most
-  // recent existing assistant message as 'already auto-played' so that
-  // re-entering a chat doesn't trigger auto-play of the last reply
-  // you've already heard.
-  useEffect(() => {
-    stopPlayback()
-    let mostRecentId = null
-    const list = (char?.messages || []).filter(m => m.role !== 'narrator' && !m.hidden)
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i]
-      if (m.role === 'assistant' && !m.streaming && m.text) { mostRecentId = m.id; break }
+    // First time we render this chat — prime the seen-set with everything
+    // already on the screen so existing history doesn't get auto-played.
+    if (seenForChatRef.current !== char.id) {
+      stopPlayback()
+      const fresh = new Set()
+      for (const m of list) {
+        if (m.role === 'assistant' && !m.streaming && m.text) fresh.add(m.id)
+      }
+      seenFinalizedRef.current = fresh
+      seenForChatRef.current = char.id
+      return
     }
-    lastAutoPlayedRef.current = mostRecentId
-  }, [char?.id])
+
+    // Subsequent renders: pick up any finalised assistant messages that
+    // weren't in the seen-set on the previous render. Mark them seen
+    // BEFORE calling playMessage so even if the effect re-runs we won't
+    // double up.
+    for (const m of list) {
+      if (m.role !== 'assistant' || m.streaming || !m.text) continue
+      if (seenFinalizedRef.current.has(m.id)) continue
+      seenFinalizedRef.current.add(m.id)
+      if (audioEnabled) playMessage(m)
+    }
+  }, [char?.id, char?.messages?.length, char?.messages?.[char?.messages?.length - 1]?.text, char?.messages?.[char?.messages?.length - 1]?.streaming, audioEnabled])
 
   // Free Blob URLs on unmount.
   useEffect(() => () => {
