@@ -481,9 +481,12 @@ export default function App() {
   }))
   const groupViews = groups.map(g => {
     const members = (g.participants || []).map(pid => characters.find(c => c.id === pid)).filter(Boolean)
+    const isTyping = streamingChatId === g.id && streamingCharId != null
+    const typingSpeaker = isTyping ? members.find(m => m?.id === streamingCharId) : null
     return {
       ...viewGroup(g, members, chatHistory[g.id], sceneStates[g.id]),
-      typing: streamingChatId === g.id && streamingCharId != null,
+      typing: isTyping,
+      typingSpeaker,
     }
   })
   const views = [...charViews, ...groupViews]

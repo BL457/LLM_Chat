@@ -141,7 +141,9 @@ function ChatRow({ char, active, onClick }) {
             {char.typing
               ? (
                 <span style={{ color: 'var(--sl-accent)', fontStyle: 'italic', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  {char.name} is typing
+                  {/* For groups, the actively speaking member is on
+                      char.typingSpeaker so we name THEM, not the group. */}
+                  {(char.typingSpeaker?.name || char.name)} is typing
                   <span className="sl-typingdots" style={{ paddingBottom: 1 }}><span /><span /><span /></span>
                 </span>
               )
