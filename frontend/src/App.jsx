@@ -367,6 +367,10 @@ export default function App() {
   const [streamingId, setStreamingId] = useState(null)  // assistant message id being streamed
   const [streamingCharId, setStreamingCharId] = useState(null)  // which character is voicing the reply
   const [streamingChatId, setStreamingChatId] = useState(null)  // which chat (char or group) it lands in
+
+  // Mirror chatHistory in a ref so long-running async work (the auto-loop)
+  // can always read the latest value rather than a stale closure capture.
+  const chatHistoryRef = useRef({})
   const [loaded, setLoaded] = useState(false)
   const [mobileScreen, setMobileScreen] = useState('list')  // 'list' | 'conv' — only applied on mobile
   const isMobile = useIsMobile()
@@ -422,6 +426,11 @@ export default function App() {
       saveState('settings', next).catch(() => {})
     }
   }, [activeId])
+
+  // Keep the ref in sync with the latest chatHistory state — this lets the
+  // auto-loop and any other long-lived async work read the current value
+  // without being tripped up by stale closure captures.
+  useEffect(() => { chatHistoryRef.current = chatHistory }, [chatHistory])
 
   // Helpers to persist
   const persistCharacters = useCallback((next) => {
@@ -1020,19 +1029,20 @@ export default function App() {
     while (autoLoopRef.current.active && autoLoopRef.current.groupId === groupId) {
       const group = groups.find(g => g.id === groupId)
       if (!group) break
-      // Read directly from setChatHistory(prev => ...) by snapshotting via
-      // a state-resolving promise — chatHistory in the closure will lag.
-      // Simpler: use a one-tick wait between iterations and rely on the
-      // closure being recreated each render.
-      const cur = chatHistory[groupId] || []
+      // Read latest chat history through the ref — the closure version is
+      // captured once and never updates, which would make us pick the same
+      // speaker every iteration AND send stale context to the LLM.
+      const cur = chatHistoryRef.current[groupId] || []
       const speaker = pickNextGroupSpeaker(group, cur)
       if (!speaker) break
-      await runGroupAssistantTurn(groupId, speaker)
+      await runGroupAssistantTurn(groupId, speaker, { sourceMessages: cur })
+      // One-tick yield so React can flush, ref can update from the new
+      // setChatHistory, and a Pause click can interrupt.
       await new Promise(r => setTimeout(r, 50))
     }
     autoLoopRef.current = { active: false, groupId: null }
     setAutoLoopActive(null)
-  }, [groups, chatHistory, pickNextGroupSpeaker, runGroupAssistantTurn])
+  }, [groups, pickNextGroupSpeaker, runGroupAssistantTurn])
 
   const stopAutoLoop = useCallback(() => {
     autoLoopRef.current = { active: false, groupId: null }
