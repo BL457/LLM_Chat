@@ -85,13 +85,25 @@ export default function Conversation({
   // final image landing — both trigger a re-scroll.
   const lastMsg = char?.messages?.[char?.messages?.length - 1]
   const lastImageStatus = lastMsg?.image?.status || ''
+  // Track which speaker spoke last too — in group chats, alternating
+  // members can finalize back-to-back without changing length or last
+  // text-string identity (different objects but same content shape).
+  const lastFrom = lastMsg?.from || ''
   useEffect(() => {
     const el = messagesRef.current
     if (!el) return
-    if (wasNearBottomRef.current) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [char?.messages?.length, lastMsg?.text, lastImageStatus])
+    if (!wasNearBottomRef.current) return
+    // Multi-tick re-snap: layout for a freshly-grown bubble (typing dots
+    // → full message) often settles across a frame or two, so a single
+    // synchronous scrollTop assignment can land short. Same pattern as
+    // the char.id effect.
+    const snap = () => { if (el) el.scrollTop = el.scrollHeight }
+    snap()
+    const raf = requestAnimationFrame(snap)
+    const t1 = setTimeout(snap, 80)
+    const t2 = setTimeout(snap, 250)
+    return () => { cancelAnimationFrame(raf); clearTimeout(t1); clearTimeout(t2) }
+  }, [char?.messages?.length, lastMsg?.text, lastImageStatus, lastFrom])
 
   useEffect(() => {
     const el = messagesRef.current
