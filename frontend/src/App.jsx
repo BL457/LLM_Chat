@@ -188,12 +188,13 @@ function sceneStateToString(scene) {
 // is currently in (theirs to update, others' for awareness).
 function buildGroupSystemPrompt(speaker, group, members, groupScene, { timeAware = false } = {}) {
   const sceneLines = []
-  sceneLines.push(`You are speaking in a group conversation called "${group.name || 'Group'}".`)
+  sceneLines.push(`You are physically present in a shared scene with the other named characters listed below. This is face-to-face roleplay — everyone is in the same room (or whatever location is set), able to see each other, hear each other, and physically interact. This is NOT a text-message thread, group chat app, phone call, or video call. You are bodily there.`)
+  if (group.name) sceneLines.push(`This scene is informally called "${group.name}".`)
   if (group.blurb) sceneLines.push(group.blurb)
-  if (groupScene?.location) sceneLines.push(`Shared location: ${groupScene.location}`)
-  if (groupScene?.atmosphere) sceneLines.push(`Atmosphere of the scene: ${groupScene.atmosphere}`)
+  if (groupScene?.location) sceneLines.push(`Where you all are right now: ${groupScene.location}`)
+  if (groupScene?.atmosphere) sceneLines.push(`The atmosphere in the room: ${groupScene.atmosphere}`)
   sceneLines.push('')
-  sceneLines.push('Other participants in the room:')
+  sceneLines.push('Who else is here, in the room with you:')
   for (const m of members) {
     if (!m || m.id === speaker.id) continue
     const peerScene = (groupScene?.characters || {})[m.id] || {}
@@ -206,15 +207,22 @@ function buildGroupSystemPrompt(speaker, group, members, groupScene, { timeAware
   }
   sceneLines.push('')
   const myScene = (groupScene?.characters || {})[speaker.id] || {}
-  sceneLines.push(`Your own current state in this scene:`)
+  sceneLines.push(`Your own state right now — what you look like and how you're feeling:`)
   sceneLines.push(`  clothing: ${myScene.clothing || '—'}`)
   sceneLines.push(`  appearance: ${myScene.appearance || '—'}`)
-  sceneLines.push(`  objects: ${myScene.objects || '—'}`)
-  sceneLines.push(`  mood: ${myScene.mood || '—'}`)
+  sceneLines.push(`  objects you have on you: ${myScene.objects || '—'}`)
+  sceneLines.push(`  your current mood: ${myScene.mood || '—'}`)
   sceneLines.push('')
-  sceneLines.push('In the chat history, lines that begin with [Name]: are messages spoken by other participants. Lines without a prefix are spoken by the user (the human you are roleplaying with).')
-  sceneLines.push('Reply only as yourself. Do NOT speak for, narrate the actions of, or generate dialogue for any other named participant. Stay focused on your character.')
-  sceneLines.push('When you write your [/SCENE] block, the LOCATION field updates the SHARED scene location for everyone, while CLOTHING / APPEARANCE / OBJECTS / MOOD apply ONLY to you — your own state in the scene right now.')
+  sceneLines.push('How to read the conversation log below:')
+  sceneLines.push('  - Lines that begin with "[Name]:" are what that named person is SAYING OUT LOUD or DOING in the same physical space as you. They are not text messages — they are spoken words and visible actions you witnessed in real time.')
+  sceneLines.push('  - Lines without a "[Name]:" prefix are the user (the human in the room with you) speaking and acting.')
+  sceneLines.push('')
+  sceneLines.push('When you reply:')
+  sceneLines.push('  - Speak and act as a physically present person — make eye contact, gesture, move around the space, touch objects, react to body language and tone, not just words. *bracketed actions* describe what you are doing physically.')
+  sceneLines.push('  - Reply only as yourself. NEVER write "[OtherName]: ..." or narrate what another named character says or does — they speak for themselves on their own turn.')
+  sceneLines.push('  - You can interact with the people around you the same way you would in any face-to-face setting: hand things to them, look at them, step closer, walk away, react to what they just did. Do not behave as if there is a screen between you.')
+  sceneLines.push('')
+  sceneLines.push('When you write your [/SCENE] block: the LOCATION field updates the SHARED scene location for everyone (use it if the group moves rooms), while CLOTHING / APPEARANCE / OBJECTS / MOOD apply ONLY to you — your own state in the scene right now.')
 
   const sceneStateStr = sceneLines.join('\n')
   return buildNarrativeSystemPrompt(speaker, sceneStateStr, { timeAware })
