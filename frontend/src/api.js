@@ -151,7 +151,8 @@ export async function listSdModels(endpoint = 'http://localhost:7860') {
   try {
     const r = await fetch(`/api/sd-models?endpoint=${encodeURIComponent(endpoint)}`)
     if (!r.ok) return []
-    return r.json()
+    const data = await r.json()
+    return Array.isArray(data) ? data : []
   } catch { return [] }
 }
 
@@ -159,7 +160,8 @@ export async function listSdSamplers(endpoint = 'http://localhost:7860') {
   try {
     const r = await fetch(`/api/sd-samplers?endpoint=${encodeURIComponent(endpoint)}`)
     if (!r.ok) return []
-    return r.json()
+    const data = await r.json()
+    return Array.isArray(data) ? data : []
   } catch { return [] }
 }
 

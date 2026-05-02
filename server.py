@@ -782,7 +782,9 @@ async def sd_models(endpoint: str = ""):
     log_req("GET", url)
     try:
         resp = await http_short.get(url)
-        data = resp.json()
+        data = resp.json() if resp.status_code == 200 else []
+        if not isinstance(data, list):
+            data = []
         log_res(url, resp.status_code, f"count={len(data)}")
         return data
     except Exception as e:
@@ -797,7 +799,9 @@ async def sd_samplers(endpoint: str = ""):
     log_req("GET", url)
     try:
         resp = await http_short.get(url)
-        data = resp.json()
+        data = resp.json() if resp.status_code == 200 else []
+        if not isinstance(data, list):
+            data = []
         log_res(url, resp.status_code, f"count={len(data)}")
         return data
     except Exception as e:
