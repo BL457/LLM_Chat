@@ -142,6 +142,22 @@ For non-furry photorealistic work, use a SDXL-photoreal checkpoint of your choic
 
 ---
 
+## Booru tag CSV
+
+The image-tag normaliser maps the LLM's freeform descriptions onto canonical Danbooru/e621 tags that the SD model recognises. It needs a tag reference CSV at `data/booru_tags.csv`. The file is **not** included in the repo — you supply your own.
+
+**Expected format**: `tag,category,count,"alias1,alias2,..."`. Category `1` (artist tags) is skipped on load. This is the same format used by the popular [a1111-sd-webui-tagcomplete](https://github.com/DominikDoom/a1111-sd-webui-tagcomplete) extension, so any of its tag CSVs slot in directly.
+
+**Where to grab one**:
+
+- Danbooru tags: [`tags/danbooru.csv`](https://github.com/DominikDoom/a1111-sd-webui-tagcomplete/blob/main/tags/danbooru.csv) from `a1111-sd-webui-tagcomplete`
+- e621 tags: [`tags/e621.csv`](https://github.com/DominikDoom/a1111-sd-webui-tagcomplete/blob/main/tags/e621.csv) (use this if you're running an e621-trained checkpoint like NovaFurryXL / Illustrious furry merges)
+- Or concatenate both into a single `data/booru_tags.csv` if you want broad coverage
+
+Drop the file at `data/booru_tags.csv` and restart the server. Without it the app still runs — image tag normalisation just becomes a passthrough, so generated tags may not match your SD model's training vocabulary as cleanly.
+
+---
+
 ## Recommended settings
 
 These are the values the app starts with, tuned for Gemma + Illustrious-XL. Override per-character or globally in the **Settings** overlay.
@@ -229,7 +245,7 @@ Once the app loads:
 
 - **Frontend** (`frontend/`): single-page React app, built with Vite. Talks to the backend over `fetch` and Server-Sent Events.
 - **Backend** (`server.py`): FastAPI + httpx. Streams Ollama replies, parses the leading scene block out of each response, exposes endpoints for state persistence, image-tag extraction, and image generation.
-- **State** (`data/`): plain JSON files — `characters.json`, `chat_history.json`, `scene_state.json`, `settings.json`, `user_profile.json`, `saved_profiles.json`. Per-character data is keyed by character id. The booru tag CSV (`booru_tags.csv`, 5.8 MB) is canonical reference data tracked in git; everything else under `data/` is your personal RP content and is gitignored.
+- **State** (`data/`): plain JSON files — `characters.json`, `chat_history.json`, `scene_state.json`, `settings.json`, `user_profile.json`, `saved_profiles.json`. Per-character data is keyed by character id. Also expected here: `booru_tags.csv`, the canonical tag reference used by the image-tag normaliser (see [Booru tag CSV](#booru-tag-csv) for where to grab it). All of `data/` is gitignored — none of your personal RP content or the tag CSV are committed.
 
 ---
 
@@ -241,9 +257,9 @@ gemma4-rp/
 ├── requirements.txt           # Python deps
 ├── run.bat                    # Windows launcher: sets up venv, npm install, build, run
 ├── Modelfile                  # Optional Ollama Modelfile for building a tuned model
-├── data/
-│   └── booru_tags.csv         # Canonical booru tag map (tracked)
-│   └── *.json                 # Your data — gitignored
+├── data/                     # Gitignored — see "Booru tag CSV" in README
+│   └── booru_tags.csv         # Canonical booru tag map (you supply this)
+│   └── *.json                 # Your personal RP data
 └── frontend/
     ├── index.html
     ├── package.json

@@ -19,11 +19,9 @@ yarn-debug.log*
 yarn-error.log*
 
 # Personal RP data — characters, chat history, scene state, settings,
-# user profile, saved profiles. Backed up separately, not in git.
-# Exception: booru_tags.csv is reference data the server needs to start up,
-# so we DO track it.
+# user profile, saved profiles, and the booru tag reference CSV.
+# All gitignored. See README "Booru tag CSV" for where to download the CSV.
 data/*
-!data/booru_tags.csv
 
 # Editor / OS noise
 .vscode/
